@@ -653,17 +653,17 @@ All previous implementations either shelled to `bluetoothctl` directly or used `
 
 ---
 
-## 13. Open Questions (To Resolve During Implementation)
+## 13. Lastly
 
-1. **Target OS/distribution:** Debian Bookworm (12), Ubuntu 22.04/24.04, or Raspberry Pi OS? Package versions differ significantly (PipeWire 0.3.48 on Ubuntu 22.04 vs 1.0+ on Bookworm). This affects WirePlumber config syntax (Lua vs SPA-JSON).
+1. **Target OS/distribution:**  Ubuntu 24 LTS on intel. Rust preferred (even though references to Python in thi sdocument) fallback to Python if needed).
 
-2. **Web port and HTTPS:** Default to port `8080` (HTTP) for development. Production should use a reverse proxy (nginx) with Let's Encrypt or self-signed TLS. Document both paths.
+2. **Web port and HTTPS:** HTTP only for a local lan, with a user selectable port on install. If the port is in use, the application should increment to another port and informa the user upon successful setup.
 
-3. **Single vs. multi-room audio:** Is the ALSA loopback single-source model acceptable for phase 1? If two devices connect, first-connected wins. Acceptable?
+3. **Single room audio:** ALSA loopback single-source model acceptable for phase 1. If two devices connect, first-connected wins.
 
-4. **FFmpeg `libfdk_aac` vs built-in `aac`:** Built-in FFmpeg AAC encoder is lower quality than `libfdk_aac` but universally available. Verify target machine's FFmpeg build before choosing.
+4. **FFmpeg `libfdk_aac` vs built-in `aac`:** Built-in FFmpeg AAC encoder is lower quality than `libfdk_aac` but universally available. Verify target machine's FFmpeg build upon installing, install if not installed and configure correctly..
 
-5. **PipeWire version:** WirePlumber 0.5+ uses SPA-JSON config syntax (`~/.config/wireplumber/wireplumber.conf.d/*.conf`); WirePlumber 0.4 uses Lua scripts. Determine target version and write config for the correct syntax. This design shows 0.5+ syntax.
+5. **PipeWire version:** WirePlumber 0.5+ uses SPA-JSON config syntax (`~/.config/wireplumber/wireplumber.conf.d/*.conf`); WirePlumber 0.4 uses Lua scripts. Determine target version and write config for the correct syntax. This design shows 0.5+ syntax, this should be based on the installer figuring out what is available.
 
 ---
 
