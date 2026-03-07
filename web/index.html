@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="SoundSync — Bluetooth A2DP Sink with DSP Equaliser" />
+  <meta name="theme-color" content="#0b0b1a" />
+  <title>SoundSync</title>
+  <link rel="stylesheet" href="styles.css" />
+  <!-- Favicon as inline SVG data URI -->
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%231db8c0'/><text y='22' x='6' font-size='20'>🔊</text></svg>" />
+</head>
+<body>
+  <!-- Toast notifications -->
+  <div id="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- Main app shell -->
+  <div id="app">
+
+    <!-- ── Header ── -->
+    <header id="header" class="glass" role="banner">
+      <div class="header-left">
+        <!-- SoundSync logo mark -->
+        <div class="logo-mark" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Speaker cone -->
+            <path d="M4 8h3l5-5v16l-5-5H4V8z" fill="white" opacity="0.9"/>
+            <!-- Sound waves -->
+            <path d="M14 7.5a5 5 0 0 1 0 7" stroke="white" stroke-width="1.5" stroke-linecap="round" opacity="0.8"/>
+            <path d="M16.5 5a9 9 0 0 1 0 12" stroke="white" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+            <!-- Bluetooth symbol -->
+            <path d="M19 11l1.5-1.5-1.5-1.5M19 11l1.5 1.5L19 14M19 8v6" stroke="white" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" opacity="0.7"/>
+          </svg>
+        </div>
+        <div class="app-title">
+          <div class="app-name">SoundSync</div>
+          <div class="app-subtitle">Bluetooth Audio</div>
+        </div>
+        <!-- Connection status pill -->
+        <div id="status-pill" class="status-pill" data-status="unavailable" aria-label="Bluetooth status">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="status-text">Connecting…</span>
+        </div>
+      </div>
+      <div class="header-right">
+        <button id="btn-scan"
+                class="icon-btn"
+                data-tooltip="Scan for devices"
+                aria-label="Scan for Bluetooth devices"
+                onclick="SoundSync.toggleScan()">
+          <!-- Bluetooth scan icon -->
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8.5 1L12 4.5 9.5 7 12 9.5 8.5 13v-4.5L6 11l-1-1 3-3-3-3 1-1 2.5 2.5V1z"/>
+            <circle cx="3.5" cy="8" r="1.2"/>
+            <circle cx="2" cy="5" r="0.9" opacity="0.5"/>
+            <circle cx="2" cy="11" r="0.9" opacity="0.5"/>
+          </svg>
+        </button>
+        <button id="btn-settings"
+                class="icon-btn"
+                data-tooltip="Settings"
+                aria-label="Open settings"
+                onclick="SoundSync.toggleSettings()">
+          <!-- Gear icon -->
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path fill-rule="evenodd" d="M7.2 1h1.6l.5 1.7a5 5 0 0 1 1.2.7l1.7-.5 1.1 1.1-.5 1.7a5 5 0 0 1 .7 1.2L15 7.2v1.6l-1.7.5a5 5 0 0 1-.7 1.2l.5 1.7-1.1 1.1-1.7-.5a5 5 0 0 1-1.2.7L8.8 15H7.2l-.5-1.7a5 5 0 0 1-1.2-.7l-1.7.5-1.1-1.1.5-1.7a5 5 0 0 1-.7-1.2L1 8.8V7.2l1.7-.5a5 5 0 0 1 .7-1.2L3 3.8l1.1-1.1 1.7.5a5 5 0 0 1 1.2-.7L7.2 1zM8 10a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- ── Main content ── -->
+    <main id="main" role="main">
+
+      <!-- Devices panel -->
+      <section id="devices-panel" class="glass" aria-label="Bluetooth devices">
+        <div class="panel-title">Devices</div>
+        <div id="device-list" role="list" aria-label="Device list">
+          <div id="no-devices">
+            <div class="no-devices-icon" aria-hidden="true">📡</div>
+            <span>No devices found</span>
+            <span style="color:var(--text-muted);font-size:10px">Press scan to discover</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Equaliser panel -->
+      <section id="eq-panel" class="glass" aria-label="10-band equaliser">
+        <div class="eq-header">
+          <div class="panel-title">Equaliser</div>
+          <div class="eq-controls">
+            <!-- Preset selector -->
+            <select id="eq-preset-select"
+                    class="eq-preset-select"
+                    aria-label="EQ preset"
+                    onchange="SoundSync.applyPreset(this.value)">
+              <option value="">— Preset —</option>
+            </select>
+            <!-- Save preset -->
+            <button class="toggle-btn"
+                    onclick="SoundSync.savePreset()"
+                    aria-label="Save current EQ as preset"
+                    data-tooltip="Save preset">
+              💾
+            </button>
+            <!-- Reset -->
+            <button class="toggle-btn"
+                    onclick="SoundSync.resetEq()"
+                    aria-label="Reset EQ to flat"
+                    data-tooltip="Reset to flat">
+              ↺
+            </button>
+            <!-- Enable/disable toggle -->
+            <button id="eq-toggle"
+                    class="toggle-btn active"
+                    onclick="SoundSync.toggleEq()"
+                    aria-label="Toggle EQ on/off"
+                    data-tooltip="Enable/disable EQ">
+              EQ
+            </button>
+          </div>
+        </div>
+
+        <!-- EQ band sliders -->
+        <div id="eq-sliders" role="group" aria-label="EQ band sliders">
+          <!-- Rendered by JavaScript -->
+        </div>
+      </section>
+
+      <!-- Playback panel -->
+      <section id="playback-panel" class="glass" aria-label="Playback status">
+        <div class="panel-title">Now Playing</div>
+
+        <div class="playback-device-info">
+          <div class="now-playing-label">Source Device</div>
+          <div id="playback-device" class="now-playing-device">—</div>
+          <div id="playback-state" class="now-playing-status" style="color:var(--text-muted)">No active stream</div>
+        </div>
+
+        <!-- Waveform visualiser (CSS animated) -->
+        <div id="waveform" class="waveform" aria-hidden="true">
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+        </div>
+
+        <!-- Stream statistics -->
+        <div class="stream-stats">
+          <div class="stat-row">
+            <span class="stat-label">Stream</span>
+            <span id="stat-stream" class="stat-value inactive">Idle</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Codec</span>
+            <span id="stat-codec" class="stat-value">A2DP</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">PipeWire</span>
+            <span id="stat-pw" class="stat-value inactive">—</span>
+          </div>
+        </div>
+
+        <!-- Volume control (system output level indicator) -->
+        <div>
+          <div class="panel-title" style="margin-bottom:8px">Output Level</div>
+          <div class="volume-row">
+            <span class="volume-icon" aria-hidden="true">🔈</span>
+            <input type="range"
+                   id="volume-slider"
+                   class="volume-slider"
+                   min="0" max="100" value="80"
+                   aria-label="Output volume"
+                   oninput="SoundSync.setVolume(this.value)" />
+            <span class="volume-icon" aria-hidden="true">🔊</span>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- ── Settings drawer ── -->
+    <div id="settings-drawer">
+      <div class="drawer-toggle"
+           role="button"
+           tabindex="0"
+           aria-expanded="false"
+           aria-controls="settings-content"
+           onclick="SoundSync.toggleSettings()"
+           onkeydown="if(event.key==='Enter'||event.key===' ')SoundSync.toggleSettings()">
+        <span class="drawer-toggle-left">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <path fill-rule="evenodd" d="M7.2 1h1.6l.5 1.7a5 5 0 0 1 1.2.7l1.7-.5 1.1 1.1-.5 1.7a5 5 0 0 1 .7 1.2L15 7.2v1.6l-1.7.5a5 5 0 0 1-.7 1.2l.5 1.7-1.1 1.1-1.7-.5a5 5 0 0 1-1.2.7L8.8 15H7.2l-.5-1.7a5 5 0 0 1-1.2-.7l-1.7.5-1.1-1.1.5-1.7a5 5 0 0 1-.7-1.2L1 8.8V7.2l1.7-.5a5 5 0 0 1 .7-1.2L3 3.8l1.1-1.1 1.7.5a5 5 0 0 1 1.2-.7L7.2 1zM8 10a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/>
+          </svg>
+          Settings
+        </span>
+        <span class="drawer-chevron" id="drawer-chevron" aria-hidden="true">▾</span>
+      </div>
+
+      <div id="settings-content" role="region" aria-label="Settings">
+        <!-- Network settings -->
+        <div class="settings-group">
+          <div class="settings-group-title">Network</div>
+          <div class="settings-row">
+            <span class="settings-label">Speaker name</span>
+          </div>
+          <div class="settings-row">
+            <input type="text"
+                   id="settings-name"
+                   class="settings-input"
+                   placeholder="SoundSync"
+                   maxlength="64"
+                   aria-label="Bluetooth speaker name" />
+          </div>
+          <button class="settings-btn" onclick="SoundSync.applyName()">Apply Name</button>
+        </div>
+
+        <!-- Bluetooth settings -->
+        <div class="settings-group">
+          <div class="settings-group-title">Bluetooth</div>
+          <div class="settings-row">
+            <span class="settings-label">Adapter</span>
+            <span id="settings-adapter" class="stat-value" style="font-size:11px">—</span>
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Devices</span>
+            <span id="settings-device-count" class="stat-value" style="font-size:11px">0</span>
+          </div>
+          <button class="settings-btn" onclick="SoundSync.toggleScan()">Scan Devices</button>
+        </div>
+
+        <!-- Diagnostics -->
+        <div class="settings-group">
+          <div class="settings-group-title">Diagnostics</div>
+          <div class="settings-row">
+            <span class="settings-label">Uptime</span>
+            <span id="settings-uptime" class="stat-value" style="font-size:11px">—</span>
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Version</span>
+            <span class="stat-value" style="font-size:11px">v0.1.0</span>
+          </div>
+          <button class="settings-btn" id="btn-refresh" onclick="SoundSync.refresh()">Refresh Status</button>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- #app -->
+
+  <script src="app.js"></script>
+</body>
+</html>

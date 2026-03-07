@@ -1,0 +1,80 @@
+[package]
+name = "soundsync"
+version = "0.1.0"
+edition = "2021"
+description = "SoundSync — Bluetooth A2DP Sink with DSP EQ and Web UI"
+authors = ["SoundSync"]
+license = "MIT"
+
+[lib]
+name = "soundsync"
+path = "src/lib.rs"
+
+[[bin]]
+name = "soundsync"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Web framework
+axum = { version = "0.7", features = ["ws", "macros"] }
+tower = { version = "0.4", features = ["full"] }
+tower-http = { version = "0.5", features = ["cors", "fs", "trace"] }
+
+# D-Bus for BlueZ
+zbus = { version = "4", features = ["tokio"] }
+zvariant = { version = "4", features = ["serde"] }
+
+# PipeWire
+pipewire = "0.8"
+spa = "0.8"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+
+# CLI argument parsing
+clap = { version = "4", features = ["derive", "env"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Async utilities
+futures-util = "0.3"
+tokio-stream = "0.1"
+
+# UUID generation
+uuid = { version = "1", features = ["v4"] }
+
+# Concurrent data structures
+dashmap = "5"
+
+# Math for DSP
+libm = "0.2"
+
+# File watching / paths
+dirs = "5"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+debug = true

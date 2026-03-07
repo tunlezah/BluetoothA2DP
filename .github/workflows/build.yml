@@ -1,0 +1,145 @@
+name: Build SoundSync
+
+on:
+  push:
+    branches: ["main", "master", "claude/*"]
+  pull_request:
+    branches: ["main", "master"]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── Build & Test ────────────────────────────────────────────────────────────
+  build:
+    name: Build and Test
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Install system dependencies required for PipeWire and BlueZ Rust crates
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            libpipewire-0.3-dev \
+            libspa-0.2-dev \
+            libdbus-1-dev \
+            pkg-config \
+            clang \
+            libasound2-dev \
+            libudev-dev
+
+      # Cache Rust compilation artifacts
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      # Install stable Rust toolchain
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # Check code formatting
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      # Run clippy lints
+      - name: Clippy lint check
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      # Build in debug mode (fast)
+      - name: Build (debug)
+        run: cargo build --all-targets
+
+      # Build in release mode to verify optimised build
+      - name: Build (release)
+        run: cargo build --release
+
+      # Run unit tests (lib crate only, no system D-Bus/PipeWire needed)
+      - name: Run unit tests
+        run: cargo test --lib -- --test-thread=1
+
+      # Verify binary exists and can print version
+      - name: Verify binary
+        run: |
+          ./target/release/soundsync --version
+          echo "Binary size: $(stat -c%s target/release/soundsync) bytes"
+
+  # ── Security audit ──────────────────────────────────────────────────────────
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-24.04
+    continue-on-error: true   # advisory only — don't block merges
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit dependencies
+        run: cargo audit
+
+  # ── Release binary ──────────────────────────────────────────────────────────
+  release:
+    name: Build Release Artifact
+    runs-on: ubuntu-24.04
+    needs: build
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            libpipewire-0.3-dev \
+            libspa-0.2-dev \
+            libdbus-1-dev \
+            pkg-config \
+            clang
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Strip binary
+        run: strip target/release/soundsync
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: soundsync-linux-x86_64
+          path: target/release/soundsync
+          if-no-files-found: error
+          retention-days: 30

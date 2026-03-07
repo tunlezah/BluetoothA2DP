@@ -1,0 +1,28 @@
+# Rust build artifacts
+/target/
+Cargo.lock
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment files (may contain secrets)
+.env
+.env.local
+
+# Log files
+*.log
+soundsync.log
+
+# Config (user-local, not versioned)
+config.local.toml
+
+# Generated files
+/docs/generated/
