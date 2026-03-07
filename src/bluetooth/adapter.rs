@@ -87,7 +87,7 @@ pub struct AdapterManager<'a> {
 impl<'a> AdapterManager<'a> {
     /// Create a new AdapterManager for the given adapter path.
     pub async fn new(connection: &'a Connection, adapter_path: &str) -> anyhow::Result<Self> {
-        let adapter = Adapter1ProxyBuilder::new(connection)
+        let adapter = Adapter1Proxy::builder(connection)
             .path(adapter_path)?
             .build()
             .await?;

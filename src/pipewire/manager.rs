@@ -1,46 +1,55 @@
 //! PipeWire graph manager for SoundSync.
 //!
-//! This module monitors the PipeWire graph for Bluetooth source nodes
-//! (created by WirePlumber/BlueZ) and manages a filter node that applies
-//! the 10-band EQ DSP processing.
+//! # Architecture
 //!
-//! Architecture:
-//!   bluez_source.* node (created by WirePlumber)
-//!     → SoundSync EQ filter node (this module)
-//!       → default audio output sink
+//! Rather than using the unstable `pw::filter::Filter` Rust bindings (whose
+//! API changes between pipewire-rs point releases), this module takes a
+//! two-layer approach:
 //!
-//! The filter node is implemented using the PipeWire filter API which
-//! provides a real-time audio processing callback.
+//! 1. **Registry monitor** — uses the stable `pipewire` Rust crate to watch
+//!    the PipeWire graph for Bluetooth source nodes created by WirePlumber.
 //!
-//! Design decision: We use the `pipewire` Rust crate for integration.
-//! The filter runs in a dedicated thread managed by the PipeWire main loop.
-//! EQ coefficient updates are communicated via an atomic swap to avoid
-//! blocking the audio thread.
+//! 2. **Filter-chain subprocess** — spawns `pipewire-filter-chain` with a
+//!    dynamically-generated config file that implements the 10-band biquad EQ.
+//!    When EQ settings change, a new config is written and the subprocess is
+//!    restarted (causing a brief, acceptable dropout).
+//!
+//! # Audio graph
+//!
+//! ```text
+//! bluez_input.* (WirePlumber)
+//!     │
+//!     ▼
+//! effect_input.soundsync-eq  ← Audio/Sink  (pipewire-filter-chain)
+//!     │  [bq_peaking × 10 bands]
+//!     ▼
+//! effect_output.soundsync-eq ← Audio/Source
+//!     │
+//!     ▼
+//! Default system output sink
+//! ```
 
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::process::{Child, Command};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Context;
-use pipewire as pw;
-use pipewire::{
-    context::Context as PwContext,
-    main_loop::MainLoop,
-    properties::properties,
-    spa::utils::dict::DictRef,
-};
+use pipewire::spa::utils::dict::DictRef;
+use pipewire::types::ObjectType;
 
-use crate::dsp::eq::{EqBand, Equaliser, EqualiserHandle};
+use crate::dsp::eq::{EqBand, EqualiserHandle};
 use crate::state::{AppStateHandle, DeviceState, SystemEvent};
 
-/// Prefix used by WirePlumber for Bluetooth audio nodes.
-const BLUEZ_SOURCE_PREFIX: &str = "bluez_input";
-/// Also check for the classic bluez_source prefix
-const BLUEZ_SOURCE_PREFIX2: &str = "bluez_source";
+/// Node name prefixes used by WirePlumber for Bluetooth A2DP input nodes.
+const BLUEZ_NODE_PREFIXES: &[&str] = &["bluez_input.", "bluez_source.", "api.bluez5."];
 
-/// The PipeWire manager runs in a dedicated thread alongside the PW main loop.
+/// The PipeWire manager.
+///
+/// Runs in a dedicated blocking thread (via `tokio::task::spawn_blocking`).
 pub struct PipeWireManager {
-    state: AppStateHandle,
-    equaliser: EqualiserHandle,
+    pub state: AppStateHandle,
+    pub equaliser: EqualiserHandle,
 }
 
 impl PipeWireManager {
@@ -50,270 +59,299 @@ impl PipeWireManager {
 
     /// Run the PipeWire manager.
     ///
-    /// This starts the PipeWire main loop in the current thread.
-    /// It should be called from a dedicated Tokio blocking thread via
-    /// `tokio::task::spawn_blocking`.
+    /// Starts the PipeWire main loop for registry monitoring and launches the
+    /// `pipewire-filter-chain` subprocess for DSP. Blocks until quit.
     pub fn run(self) -> anyhow::Result<()> {
-        // Initialise PipeWire
-        pw::init();
-
+        pipewire::init();
         tracing::info!("PipeWire subsystem initialised");
 
-        let main_loop = MainLoop::new(None).context("Failed to create PipeWire main loop")?;
-        let context = PwContext::new(&main_loop, None).context("Failed to create PipeWire context")?;
+        // Write initial filter-chain config and start subprocess
+        let config_path = filter_chain_config_path();
+        if let Err(e) = write_filter_chain_config(&self.equaliser.get_bands(), &config_path) {
+            tracing::warn!("Could not write filter-chain config: {}", e);
+        }
+
+        let filter_process: Arc<Mutex<Option<Child>>> =
+            Arc::new(Mutex::new(start_filter_chain(&config_path)));
+
+        // PipeWire main loop
+        let main_loop = pipewire::main_loop::MainLoop::new(None)
+            .context("Failed to create PipeWire main loop")?;
+        let context = pipewire::context::Context::new(&main_loop)
+            .context("Failed to create PipeWire context")?;
         let core = context
             .connect(None)
-            .context("Failed to connect to PipeWire")?;
+            .context("Failed to connect to PipeWire daemon")?;
+        let registry = core
+            .get_registry()
+            .context("Failed to get PipeWire registry")?;
 
         tracing::info!("Connected to PipeWire daemon");
 
-        {
-            let mut s = tokio::runtime::Handle::try_current()
-                .ok()
-                .map(|_| ())
-                .unwrap_or(());
-            // Mark PipeWire as ready in state (best-effort from blocking thread)
-        }
+        let state_cb = self.state.clone();
 
-        // Use the registry to watch for new nodes
-        let registry = core.get_registry().context("Failed to get PipeWire registry")?;
-
-        // Track active BT source nodes
-        let bt_nodes: Arc<std::sync::Mutex<Vec<u32>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let bt_nodes_clone = bt_nodes.clone();
-
-        let state_for_cb = self.state.clone();
-        let eq_for_cb = self.equaliser.clone();
-
-        // Listen for global objects (nodes) being added to the graph
         let _listener = registry
             .add_listener_local()
             .global(move |global| {
-                // We only care about node objects
-                if global.type_ != pipewire::types::ObjectType::Node {
-                    return;
-                }
-
-                let props = match global.props {
-                    Some(p) => p,
-                    None => return,
-                };
-
-                let node_name = props
-                    .get("node.name")
-                    .unwrap_or("");
-
-                let media_class = props
-                    .get("media.class")
-                    .unwrap_or("");
-
-                // Detect Bluetooth audio source nodes from WirePlumber/BlueZ
-                let is_bt_source = (node_name.starts_with(BLUEZ_SOURCE_PREFIX)
-                    || node_name.starts_with(BLUEZ_SOURCE_PREFIX2))
-                    && (media_class.contains("Audio/Source")
-                        || media_class.contains("Stream/Output/Audio")
-                        || media_class.is_empty());
-
-                if is_bt_source {
-                    tracing::info!(
-                        node_id = global.id,
-                        node_name = node_name,
-                        media_class = media_class,
-                        "Bluetooth audio source node detected in PipeWire"
-                    );
-
-                    crate::logging::events::pipewire_source_created(node_name);
-
-                    let mut nodes = bt_nodes_clone.lock().unwrap();
-                    nodes.push(global.id);
-                    drop(nodes);
-
-                    // Update application state
-                    // We use a best-effort approach since we're in a sync callback
-                    // The state update will be reflected on the next poll cycle
-                    let state_ref = state_for_cb.clone();
-                    std::thread::spawn(move || {
-                        // Signal that PipeWire source is ready
-                        // The main application loop will detect this and
-                        // update device state to PipewireSourceReady
-                        state_ref.broadcast(SystemEvent::StreamStarted {
-                            address: "pipewire_source".to_string(),
-                        });
-                    });
-                }
+                on_global_object(&state_cb, global);
             })
-            .global_remove(move |id| {
-                let mut nodes = bt_nodes.lock().unwrap();
-                let before = nodes.len();
-                nodes.retain(|&n| n != id);
-                let removed = before != nodes.len();
-                drop(nodes);
-
-                if removed {
-                    tracing::info!(node_id = id, "Bluetooth audio source removed from PipeWire");
-                }
+            .global_remove(|id| {
+                tracing::debug!(node_id = id, "PipeWire node removed from graph");
             })
             .register();
 
-        tracing::info!("PipeWire registry listener registered");
+        tracing::info!("PipeWire registry listener active");
 
-        // Start the EQ filter node in a separate thread
-        let eq_for_filter = self.equaliser.clone();
-        let filter_handle = std::thread::spawn(move || {
-            if let Err(e) = run_eq_filter_node(eq_for_filter) {
-                tracing::error!("EQ filter node error: {}", e);
-            }
-        });
-
-        // Run the PipeWire main loop — this blocks until quit() is called
         main_loop.run();
 
-        tracing::info!("PipeWire main loop stopped");
+        // Cleanup on shutdown
+        if let Ok(mut guard) = filter_process.lock() {
+            if let Some(mut child) = guard.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+                tracing::info!("pipewire-filter-chain subprocess terminated");
+            }
+        }
 
         Ok(())
     }
 }
 
-/// Run the EQ filter node in the PipeWire graph.
-///
-/// Creates a filter node that sits between the Bluetooth source and
-/// the system output, applying the 10-band biquad EQ.
-///
-/// This runs in a dedicated thread with its own PipeWire main loop.
-fn run_eq_filter_node(equaliser: EqualiserHandle) -> anyhow::Result<()> {
-    pw::init();
+/// Called when a new node appears in the PipeWire graph.
+fn on_global_object(state: &AppStateHandle, global: &pipewire::registry::GlobalObject<&DictRef>) {
+    if global.type_ != ObjectType::Node {
+        return;
+    }
 
-    let main_loop = MainLoop::new(None)?;
-    let context = PwContext::new(&main_loop, None)?;
-    let core = context.connect(None)?;
-
-    // Create the filter node with properties identifying it as a DSP processor
-    let filter = pw::filter::Filter::new(
-        &core,
-        "soundsync-eq",
-        properties! {
-            "media.type" => "Audio",
-            "media.category" => "Filter",
-            "media.role" => "DSP",
-            "node.name" => "soundsync-eq",
-            "node.description" => "SoundSync 10-Band EQ",
-            "node.autoconnect" => "true",
-            "audio.position" => "[ FL, FR ]",
-        },
-    )
-    .context("Failed to create PipeWire filter")?;
-
-    // Add stereo input port
-    let _in_left = unsafe {
-        filter.add_port::<f32>(
-            pw::filter::Direction::Input,
-            pw::filter::PortFlags::empty(),
-            properties! {
-                "format.dsp" => "32 bit float mono audio",
-                "audio.channel" => "FL",
-                "port.name" => "input_FL",
-            },
-        )
+    let props = match &global.props {
+        Some(p) => p,
+        None => return,
     };
 
-    let _in_right = unsafe {
-        filter.add_port::<f32>(
-            pw::filter::Direction::Input,
-            pw::filter::PortFlags::empty(),
-            properties! {
-                "format.dsp" => "32 bit float mono audio",
-                "audio.channel" => "FR",
-                "port.name" => "input_FR",
-            },
-        )
-    };
+    let node_name = props.get("node.name").unwrap_or("");
+    let media_class = props.get("media.class").unwrap_or("");
 
-    // Add stereo output port
-    let _out_left = unsafe {
-        filter.add_port::<f32>(
-            pw::filter::Direction::Output,
-            pw::filter::PortFlags::empty(),
-            properties! {
-                "format.dsp" => "32 bit float mono audio",
-                "audio.channel" => "FL",
-                "port.name" => "output_FL",
-            },
-        )
-    };
+    let is_bt_node = BLUEZ_NODE_PREFIXES
+        .iter()
+        .any(|pfx| node_name.starts_with(pfx));
 
-    let _out_right = unsafe {
-        filter.add_port::<f32>(
-            pw::filter::Direction::Output,
-            pw::filter::PortFlags::empty(),
-            properties! {
-                "format.dsp" => "32 bit float mono audio",
-                "audio.channel" => "FR",
-                "port.name" => "output_FR",
-            },
-        )
-    };
+    if !is_bt_node {
+        return;
+    }
 
-    tracing::info!("PipeWire EQ filter node created with stereo I/O ports");
+    tracing::info!(
+        node_id = global.id,
+        node_name,
+        media_class,
+        "Bluetooth audio node detected in PipeWire graph"
+    );
 
-    // Connect the filter to start processing
-    filter
-        .connect(pw::filter::FilterFlags::RT_PROCESS, None)
-        .context("Failed to connect PipeWire filter")?;
+    crate::logging::events::pipewire_source_created(node_name);
 
-    tracing::info!("PipeWire EQ filter connected and ready for audio processing");
+    // Signal the async layer via the broadcast channel
+    state.broadcast(SystemEvent::StreamStarted {
+        address: "pipewire_detected".to_string(),
+    });
+}
 
-    main_loop.run();
+// ── Filter-chain config ───────────────────────────────────────────────────────
 
+/// Path for the dynamically-generated filter-chain config.
+fn filter_chain_config_path() -> PathBuf {
+    let base = dirs::runtime_dir()
+        .or_else(dirs::cache_dir)
+        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    base.join("soundsync").join("filter-chain.conf")
+}
+
+/// Write the filter-chain config for the given EQ bands to disk.
+pub fn write_filter_chain_config(bands: &[EqBand], path: &PathBuf) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Cannot create config dir: {}", parent.display()))?;
+    }
+    let config = generate_filter_chain_config(bands);
+    std::fs::write(path, config)
+        .with_context(|| format!("Cannot write filter-chain config: {}", path.display()))?;
+    tracing::debug!(path = %path.display(), "Filter-chain config written");
     Ok(())
 }
 
-/// Monitor PipeWire for Bluetooth source node state changes.
+/// Generate the PipeWire filter-chain config content.
 ///
-/// This is a lightweight async task that polls for BT source activity
-/// and updates the application state accordingly. It runs alongside the
-/// blocking PipeWire thread.
+/// Produces 10 `bq_peaking` builtin DSP nodes chained in series with the
+/// gain, frequency and Q from the current EQ band settings.
+fn generate_filter_chain_config(bands: &[EqBand]) -> String {
+    let band_names = [
+        "eq_60hz", "eq_120hz", "eq_250hz", "eq_500hz", "eq_1khz",
+        "eq_2khz", "eq_4khz",  "eq_8khz",  "eq_12khz", "eq_16khz",
+    ];
+
+    let nodes: String = bands
+        .iter()
+        .enumerate()
+        .map(|(i, band)| {
+            format!(
+                "          {{ type = builtin  label = bq_peaking  name = {name}\n\
+                 \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20  control = {{ \"Freq\" = {freq}  \"Q\" = 1.41  \"Gain\" = {gain} }} }}\n",
+                name = band_names[i],
+                freq = band.freq,
+                gain = band.gain_db,
+            )
+        })
+        .collect();
+
+    let links: String = (0..bands.len().saturating_sub(1))
+        .map(|i| {
+            format!(
+                "          {{ output = \"{}:Out\"  input = \"{}:In\" }}\n",
+                band_names[i],
+                band_names[i + 1],
+            )
+        })
+        .collect();
+
+    let first = band_names[0];
+    let last = band_names[bands.len() - 1];
+
+    format!(
+        "# SoundSync 10-Band EQ — generated by soundsync\n\
+         context.modules = [\n\
+         \x20 {{ name = libpipewire-module-filter-chain\n\
+         \x20\x20\x20 args = {{\n\
+         \x20\x20\x20\x20\x20 node.description = \"SoundSync 10-Band EQ\"\n\
+         \x20\x20\x20\x20\x20 media.name       = \"SoundSync EQ\"\n\
+         \n\
+         \x20\x20\x20\x20\x20 filter.graph = {{\n\
+         \x20\x20\x20\x20\x20\x20\x20 nodes = [\n\
+         {nodes}\
+         \x20\x20\x20\x20\x20\x20\x20 ]\n\
+         \n\
+         \x20\x20\x20\x20\x20\x20\x20 links = [\n\
+         {links}\
+         \x20\x20\x20\x20\x20\x20\x20 ]\n\
+         \n\
+         \x20\x20\x20\x20\x20\x20\x20 inputs  = [ \"{first}:In\" ]\n\
+         \x20\x20\x20\x20\x20\x20\x20 outputs = [ \"{last}:Out\" ]\n\
+         \x20\x20\x20\x20\x20 }}\n\
+         \n\
+         \x20\x20\x20\x20\x20 capture.props = {{\n\
+         \x20\x20\x20\x20\x20\x20\x20 node.name   = \"effect_input.soundsync-eq\"\n\
+         \x20\x20\x20\x20\x20\x20\x20 media.class = \"Audio/Sink\"\n\
+         \x20\x20\x20\x20\x20\x20\x20 audio.channels = 2\n\
+         \x20\x20\x20\x20\x20\x20\x20 audio.position = [ FL FR ]\n\
+         \x20\x20\x20\x20\x20 }}\n\
+         \n\
+         \x20\x20\x20\x20\x20 playback.props = {{\n\
+         \x20\x20\x20\x20\x20\x20\x20 node.name   = \"effect_output.soundsync-eq\"\n\
+         \x20\x20\x20\x20\x20\x20\x20 media.class = \"Audio/Source\"\n\
+         \x20\x20\x20\x20\x20\x20\x20 audio.channels = 2\n\
+         \x20\x20\x20\x20\x20\x20\x20 audio.position = [ FL FR ]\n\
+         \x20\x20\x20\x20\x20 }}\n\
+         \x20\x20\x20 }}\n\
+         \x20 }}\n\
+         ]\n",
+        nodes = nodes,
+        links = links,
+        first = first,
+        last = last,
+    )
+}
+
+/// Start the `pipewire-filter-chain` subprocess.
+///
+/// Returns `None` if the binary is not found — the application continues
+/// without EQ DSP in that case, logging a clear warning.
+fn start_filter_chain(config_path: &PathBuf) -> Option<Child> {
+    match Command::new("pipewire-filter-chain")
+        .arg("--config")
+        .arg(config_path)
+        .spawn()
+    {
+        Ok(child) => {
+            tracing::info!(
+                pid = child.id(),
+                config = %config_path.display(),
+                "pipewire-filter-chain DSP subprocess started"
+            );
+            Some(child)
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "pipewire-filter-chain not available — EQ DSP will be inactive. \
+                 Install: sudo apt-get install pipewire-audio"
+            );
+            None
+        }
+    }
+}
+
+/// Reload the filter-chain subprocess with updated EQ settings.
+///
+/// Writes a new config, terminates the old process, and starts a fresh one.
+/// Causes a brief audio dropout (< 200ms) which is acceptable for EQ changes.
+pub fn reload_filter_chain(bands: &[EqBand], filter_process: &Arc<Mutex<Option<Child>>>) {
+    let config_path = filter_chain_config_path();
+
+    if let Err(e) = write_filter_chain_config(bands, &config_path) {
+        tracing::error!("Failed to write filter-chain config on EQ reload: {}", e);
+        return;
+    }
+
+    if let Ok(mut guard) = filter_process.lock() {
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+            tracing::debug!("Stopped old pipewire-filter-chain subprocess");
+        }
+        *guard = start_filter_chain(&config_path);
+    }
+}
+
+// ── Async state monitor ───────────────────────────────────────────────────────
+
+/// Async task: listens for PipeWire source events and advances device state.
 pub async fn monitor_pipewire_state(state: AppStateHandle) {
-    let mut interval = tokio::time::interval(Duration::from_millis(1000));
+    let mut rx = state.subscribe();
+    let mut interval = tokio::time::interval(Duration::from_secs(2));
 
     loop {
-        interval.tick().await;
-
-        // Check if any device is in ProfileNegotiated state
-        // and update to PipewireSourceReady when we detect the node
-        let devices_to_update: Vec<String> = {
-            let s = state.state.read().await;
-            s.devices
-                .values()
-                .filter(|d| d.state == DeviceState::ProfileNegotiated)
-                .map(|d| d.address.clone())
-                .collect()
-        };
-
-        // The actual detection happens in the PipeWire registry callback.
-        // Here we just ensure state consistency for devices that have
-        // been in ProfileNegotiated for more than 2 seconds.
-        for addr in devices_to_update {
-            let mut s = state.state.write().await;
-            if let Some(device) = s.devices.get_mut(&addr) {
-                // If we've been in ProfileNegotiated, advance to PipewireSourceReady
-                // The audio callback will advance to AudioActive
-                if device.state == DeviceState::ProfileNegotiated {
-                    device.transition(DeviceState::PipewireSourceReady);
-                    drop(s);
-                    state.broadcast(SystemEvent::DeviceStateChanged {
-                        address: addr.clone(),
-                        name: state
-                            .state
-                            .read()
-                            .await
-                            .devices
-                            .get(&addr)
-                            .map(|d| d.name.clone())
-                            .unwrap_or_default(),
-                        state: DeviceState::PipewireSourceReady,
-                    });
-                    break;
+        tokio::select! {
+            Ok(event) = rx.recv() => {
+                if let SystemEvent::StreamStarted { .. } = event {
+                    advance_devices_to_source_ready(&state).await;
                 }
+            }
+            _ = interval.tick() => {
+                advance_devices_to_source_ready(&state).await;
+            }
+        }
+    }
+}
+
+async fn advance_devices_to_source_ready(state: &AppStateHandle) {
+    let candidates: Vec<(String, String)> = {
+        let s = state.state.read().await;
+        s.devices
+            .values()
+            .filter(|d| d.state == DeviceState::ProfileNegotiated)
+            .map(|d| (d.address.clone(), d.name.clone()))
+            .collect()
+    };
+
+    for (addr, name) in candidates {
+        let mut s = state.state.write().await;
+        if let Some(dev) = s.devices.get_mut(&addr) {
+            if dev.state == DeviceState::ProfileNegotiated {
+                dev.transition(DeviceState::PipewireSourceReady);
+                drop(s);
+                state.broadcast(SystemEvent::DeviceStateChanged {
+                    address: addr,
+                    name,
+                    state: DeviceState::PipewireSourceReady,
+                });
+                return;
             }
         }
     }

@@ -8,18 +8,17 @@
 //! - Exposes a command channel for the API layer
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use tokio::sync::{broadcast, mpsc};
+use futures_util::StreamExt;
+use tokio::sync::mpsc;
 use zbus::proxy;
-use zbus::{Connection, MatchRule, MessageStream};
-use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+use zbus::Connection;
+use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 use super::agent;
-use super::device::{address_from_path, has_a2dp, path_from_address};
-use super::events::BluetoothEvent;
+use super::device::has_a2dp;
 use crate::state::{AppStateHandle, BluetoothStatus, DeviceInfo, DeviceState, SystemEvent};
 
 /// Commands sent to the BluetoothManager from the API layer.
@@ -256,7 +255,7 @@ impl BluetoothManager {
 
     /// Configure the adapter: power on, set name, enable discoverable.
     async fn setup_adapter(&self, connection: &Connection) -> anyhow::Result<()> {
-        let adapter = Adapter1ProxyBuilder::new(connection)
+        let adapter = Adapter1Proxy::builder(connection)
             .path(self.adapter_path.as_str())?
             .build()
             .await?;
@@ -379,11 +378,11 @@ impl BluetoothManager {
             tokio::select! {
                 Some(signal) = interfaces_added_stream.next() => {
                     if let Ok(args) = signal.args() {
-                        let path = args.path.as_str();
-                        let interfaces = args.interfaces;
+                        let path = args.path.as_str().to_owned();
+                        let interfaces = args.interfaces.clone();
 
                         if let Some(device_props) = interfaces.get("org.bluez.Device1") {
-                            if let Some(device_info) = extract_device_info(path, device_props) {
+                            if let Some(device_info) = extract_device_info(&path, device_props) {
                                 let addr = device_info.address.clone();
                                 let name = device_info.name.clone();
                                 tracing::info!(addr = %addr, name = %name, "New Bluetooth device discovered");
@@ -405,9 +404,10 @@ impl BluetoothManager {
                 }
                 Some(signal) = interfaces_removed_stream.next() => {
                     if let Ok(args) = signal.args() {
-                        let path = args.path.as_str();
-                        if args.interfaces.contains(&"org.bluez.Device1".to_string()) {
-                            if let Some(addr) = super::device::address_from_path(path) {
+                        let path = args.path.as_str().to_owned();
+                        let removed_ifaces = args.interfaces.clone();
+                        if removed_ifaces.contains(&"org.bluez.Device1".to_string()) {
+                            if let Some(addr) = super::device::address_from_path(&path) {
                                 tracing::info!(addr = %addr, "Bluetooth device removed");
                                 {
                                     let mut app_state = state.state.write().await;
@@ -417,7 +417,7 @@ impl BluetoothManager {
                             }
                         }
                         // Adapter removed — handle gracefully
-                        if args.interfaces.contains(&"org.bluez.Adapter1".to_string()) {
+                        if removed_ifaces.contains(&"org.bluez.Adapter1".to_string()) {
                             tracing::error!("Bluetooth adapter removed!");
                             {
                                 let mut app_state = state.state.write().await;
@@ -550,31 +550,22 @@ impl BluetoothManager {
                     tracing::info!("Command: StartScan");
                     agent::set_pairing_allowed(true);
 
-                    let adapter = match Adapter1ProxyBuilder::new(&connection)
-                        .path(adapter_path.as_str())
-                        .and_then(|b| Ok(b))
-                    {
-                        Ok(b) => b.build().await,
-                        Err(e) => {
-                            tracing::error!("Failed to build adapter proxy: {}", e);
-                            continue;
-                        }
-                    };
-
-                    match adapter {
-                        Ok(a) => {
-                            if let Err(e) = a.start_discovery().await {
-                                tracing::warn!("Failed to start discovery: {}", e);
-                            } else {
-                                let mut s = state.state.write().await;
-                                s.bluetooth_status = BluetoothStatus::Scanning;
-                                drop(s);
-                                state.broadcast(SystemEvent::BluetoothStatusChanged {
-                                    status: "scanning".to_string(),
-                                });
+                    if let Ok(builder) = Adapter1Proxy::builder(&connection).path(adapter_path.as_str()) {
+                        match builder.build().await {
+                            Ok(a) => {
+                                if let Err(e) = a.start_discovery().await {
+                                    tracing::warn!("Failed to start discovery: {}", e);
+                                } else {
+                                    let mut s = state.state.write().await;
+                                    s.bluetooth_status = BluetoothStatus::Scanning;
+                                    drop(s);
+                                    state.broadcast(SystemEvent::BluetoothStatusChanged {
+                                        status: "scanning".to_string(),
+                                    });
+                                }
                             }
+                            Err(e) => tracing::warn!("Failed to get adapter: {}", e),
                         }
-                        Err(e) => tracing::warn!("Failed to get adapter: {}", e),
                     }
 
                     // Auto-stop scan after 30 seconds
@@ -584,7 +575,7 @@ impl BluetoothManager {
                     tokio::spawn(async move {
                         tokio::time::sleep(Duration::from_secs(30)).await;
                         agent::set_pairing_allowed(false);
-                        if let Ok(b) = Adapter1ProxyBuilder::new(&conn_clone).path(ap_clone.as_str()) {
+                        if let Ok(b) = Adapter1Proxy::builder(&conn_clone).path(ap_clone.as_str()) {
                             if let Ok(a) = b.build().await {
                                 let discovering = a.discovering().await.unwrap_or(false);
                                 if discovering {
@@ -607,7 +598,7 @@ impl BluetoothManager {
                     tracing::info!("Command: StopScan");
                     agent::set_pairing_allowed(false);
 
-                    if let Ok(b) = Adapter1ProxyBuilder::new(&connection).path(adapter_path.as_str()) {
+                    if let Ok(b) = Adapter1Proxy::builder(&connection).path(adapter_path.as_str()) {
                         if let Ok(a) = b.build().await {
                             let _ = a.stop_discovery().await;
                         }
@@ -651,10 +642,7 @@ impl BluetoothManager {
                     let state_clone = state.clone();
                     let addr_clone = address.clone();
                     tokio::spawn(async move {
-                        match Device1ProxyBuilder::new(&conn_clone)
-                            .path(device_path.as_str())
-                            .and_then(|b| Ok(b))
-                        {
+                        match Device1Proxy::builder(&conn_clone).path(device_path.as_str()) {
                             Ok(b) => match b.build().await {
                                 Ok(device) => {
                                     // Trust the device so it auto-reconnects
@@ -692,7 +680,7 @@ impl BluetoothManager {
                     let state_clone = state.clone();
                     let addr_clone = address.clone();
                     tokio::spawn(async move {
-                        if let Ok(b) = Device1ProxyBuilder::new(&conn_clone).path(device_path.as_str()) {
+                        if let Ok(b) = Device1Proxy::builder(&conn_clone).path(device_path.as_str()) {
                             if let Ok(device) = b.build().await {
                                 if let Err(e) = device.disconnect().await {
                                     tracing::warn!(addr = %addr_clone, error = %e, "Failed to disconnect");
@@ -720,7 +708,7 @@ impl BluetoothManager {
                     tracing::info!(addr = %address, "Command: Remove");
                     let device_path = super::device::path_from_address(&adapter_path, &address);
 
-                    if let Ok(b) = Adapter1ProxyBuilder::new(&connection).path(adapter_path.as_str()) {
+                    if let Ok(b) = Adapter1Proxy::builder(&connection).path(adapter_path.as_str()) {
                         if let Ok(adapter) = b.build().await {
                             if let Ok(path) = zbus::zvariant::ObjectPath::try_from(device_path.as_str()) {
                                 let _ = adapter.remove_device(&path).await;
@@ -737,7 +725,7 @@ impl BluetoothManager {
 
                 BluetoothCommand::SetName { name } => {
                     tracing::info!(name = %name, "Command: SetName");
-                    if let Ok(b) = Adapter1ProxyBuilder::new(&connection).path(adapter_path.as_str()) {
+                    if let Ok(b) = Adapter1Proxy::builder(&connection).path(adapter_path.as_str()) {
                         if let Ok(adapter) = b.build().await {
                             if let Err(e) = adapter.set_alias(&name).await {
                                 tracing::warn!("Failed to set adapter name: {}", e);
