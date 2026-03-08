@@ -174,8 +174,14 @@ mod tests {
         for i in 0..100 {
             let sample = (i as f32) * 0.01;
             let (l, r) = filter.process(sample, sample);
-            assert!((l - sample).abs() < 1e-6, "Identity filter should pass through");
-            assert!((r - sample).abs() < 1e-6, "Identity filter should pass through");
+            assert!(
+                (l - sample).abs() < 1e-6,
+                "Identity filter should pass through"
+            );
+            assert!(
+                (r - sample).abs() < 1e-6,
+                "Identity filter should pass through"
+            );
         }
     }
 

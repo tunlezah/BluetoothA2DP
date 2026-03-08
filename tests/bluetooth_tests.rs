@@ -7,19 +7,29 @@ use soundsync::bluetooth::device::{address_from_path, has_a2dp, path_from_addres
 #[test]
 fn address_from_standard_path() {
     let path = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF";
-    assert_eq!(address_from_path(path), Some("AA:BB:CC:DD:EE:FF".to_string()));
+    assert_eq!(
+        address_from_path(path),
+        Some("AA:BB:CC:DD:EE:FF".to_string())
+    );
 }
 
 #[test]
 fn address_from_path_lowercase() {
     let path = "/org/bluez/hci0/dev_aa_bb_cc_dd_ee_ff";
-    assert_eq!(address_from_path(path), Some("aa:bb:cc:dd:ee:ff".to_string()));
+    assert_eq!(
+        address_from_path(path),
+        Some("aa:bb:cc:dd:ee:ff".to_string())
+    );
 }
 
 #[test]
 fn address_from_non_device_path_returns_none() {
     for path in &["/org/bluez", "/org/bluez/hci0", "/org/bluez/hci0/media", ""] {
-        assert!(address_from_path(path).is_none(), "Should return None for: {}", path);
+        assert!(
+            address_from_path(path).is_none(),
+            "Should return None for: {}",
+            path
+        );
     }
 }
 

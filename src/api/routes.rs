@@ -203,13 +203,16 @@ async fn post_scan(
         BluetoothCommand::StopScan
     };
 
-    state
-        .bt_cmd
-        .send(cmd)
-        .await
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, ApiError::new("Failed to send command")))?;
+    state.bt_cmd.send(cmd).await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::new("Failed to send command"),
+        )
+    })?;
 
-    Ok(Json(serde_json::json!({ "ok": true, "scanning": body.scanning })))
+    Ok(Json(
+        serde_json::json!({ "ok": true, "scanning": body.scanning }),
+    ))
 }
 
 async fn post_connect(
@@ -226,9 +229,16 @@ async fn post_connect(
             address: body.address.clone(),
         })
         .await
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, ApiError::new("Failed to send command")))?;
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ApiError::new("Failed to send command"),
+            )
+        })?;
 
-    Ok(Json(serde_json::json!({ "ok": true, "address": body.address })))
+    Ok(Json(
+        serde_json::json!({ "ok": true, "address": body.address }),
+    ))
 }
 
 async fn post_disconnect(
@@ -245,9 +255,16 @@ async fn post_disconnect(
             address: body.address.clone(),
         })
         .await
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, ApiError::new("Failed to send command")))?;
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ApiError::new("Failed to send command"),
+            )
+        })?;
 
-    Ok(Json(serde_json::json!({ "ok": true, "address": body.address })))
+    Ok(Json(
+        serde_json::json!({ "ok": true, "address": body.address }),
+    ))
 }
 
 async fn delete_device(
@@ -264,9 +281,16 @@ async fn delete_device(
             address: body.address.clone(),
         })
         .await
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, ApiError::new("Failed to send command")))?;
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ApiError::new("Failed to send command"),
+            )
+        })?;
 
-    Ok(Json(serde_json::json!({ "ok": true, "address": body.address })))
+    Ok(Json(
+        serde_json::json!({ "ok": true, "address": body.address }),
+    ))
 }
 
 async fn post_set_name(
@@ -275,17 +299,28 @@ async fn post_set_name(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
     let name = body.name.trim().to_string();
     if name.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, ApiError::new("name cannot be empty")));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            ApiError::new("name cannot be empty"),
+        ));
     }
     if name.len() > 64 {
-        return Err((StatusCode::BAD_REQUEST, ApiError::new("name too long (max 64 chars)")));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            ApiError::new("name too long (max 64 chars)"),
+        ));
     }
 
     state
         .bt_cmd
         .send(BluetoothCommand::SetName { name: name.clone() })
         .await
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, ApiError::new("Failed to send command")))?;
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ApiError::new("Failed to send command"),
+            )
+        })?;
 
     Ok(Json(serde_json::json!({ "ok": true, "name": name })))
 }
@@ -355,9 +390,12 @@ async fn post_apply_preset(
     Json(body): Json<ApplyPresetRequest>,
 ) -> Result<Json<EqResponse>, (StatusCode, Json<ApiError>)> {
     let presets = state.presets.lock().await;
-    let preset = presets
-        .get(&body.name)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, ApiError::new(format!("Preset '{}' not found", body.name))))?;
+    let preset = presets.get(&body.name).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            ApiError::new(format!("Preset '{}' not found", body.name)),
+        )
+    })?;
 
     let bands = preset.bands.clone();
     drop(presets);
@@ -384,7 +422,10 @@ async fn post_save_preset(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
     let name = body.name.trim().to_string();
     if name.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, ApiError::new("preset name cannot be empty")));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            ApiError::new("preset name cannot be empty"),
+        ));
     }
 
     let current_bands = state.eq.get_bands();
@@ -429,14 +470,8 @@ async fn serve_static(
             include_str!("../../web/index.html"),
             "text/html; charset=utf-8",
         ),
-        "app.js" => (
-            include_str!("../../web/app.js"),
-            "application/javascript",
-        ),
-        "styles.css" => (
-            include_str!("../../web/styles.css"),
-            "text/css",
-        ),
+        "app.js" => (include_str!("../../web/app.js"), "application/javascript"),
+        "styles.css" => (include_str!("../../web/styles.css"), "text/css"),
         _ => (
             include_str!("../../web/index.html"),
             "text/html; charset=utf-8",

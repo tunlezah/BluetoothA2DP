@@ -59,10 +59,8 @@ impl PresetManager {
     /// Load the built-in preset profiles.
     fn load_builtins(&mut self) {
         // Flat — all bands at 0 dB
-        self.presets.insert(
-            "flat".to_string(),
-            EqPreset::new("flat", [0.0; 10]),
-        );
+        self.presets
+            .insert("flat".to_string(), EqPreset::new("flat", [0.0; 10]));
 
         // Bass Boost — boost lows, slight high cut
         self.presets.insert(
@@ -103,10 +101,7 @@ impl PresetManager {
         // Rock — classic V-shape
         self.presets.insert(
             "rock".to_string(),
-            EqPreset::new(
-                "rock",
-                [5.0, 4.0, 2.0, 0.0, -2.0, -1.0, 1.0, 3.0, 4.0, 5.0],
-            ),
+            EqPreset::new("rock", [5.0, 4.0, 2.0, 0.0, -2.0, -1.0, 1.0, 3.0, 4.0, 5.0]),
         );
 
         // Classical — gentle boost at extremes
@@ -152,7 +147,16 @@ impl PresetManager {
 
     /// Save all user presets to disk (excluding built-ins).
     pub fn save_to_disk(&self) {
-        let builtins = ["flat", "bass_boost", "treble_boost", "vinyl_warm", "speech", "rock", "classical", "electronic"];
+        let builtins = [
+            "flat",
+            "bass_boost",
+            "treble_boost",
+            "vinyl_warm",
+            "speech",
+            "rock",
+            "classical",
+            "electronic",
+        ];
 
         let user_presets: Vec<&EqPreset> = self
             .presets
@@ -194,7 +198,16 @@ impl PresetManager {
 
     /// Delete a user-saved preset. Built-in presets cannot be deleted.
     pub fn delete_preset(&mut self, name: &str) -> bool {
-        let builtins = ["flat", "bass_boost", "treble_boost", "vinyl_warm", "speech", "rock", "classical", "electronic"];
+        let builtins = [
+            "flat",
+            "bass_boost",
+            "treble_boost",
+            "vinyl_warm",
+            "speech",
+            "rock",
+            "classical",
+            "electronic",
+        ];
         if builtins.contains(&name) {
             return false; // Cannot delete built-in presets
         }

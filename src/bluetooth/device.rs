@@ -8,10 +8,7 @@ pub const A2DP_SINK_UUID: &str = "0000110b-0000-1000-8000-00805f9b34fb";
 pub const A2DP_SOURCE_UUID: &str = "0000110a-0000-1000-8000-00805f9b34fb";
 
 /// Proxy for the `org.bluez.Device1` D-Bus interface.
-#[proxy(
-    interface = "org.bluez.Device1",
-    default_service = "org.bluez"
-)]
+#[proxy(interface = "org.bluez.Device1", default_service = "org.bluez")]
 pub trait Device1 {
     /// Initiate connection to the device.
     async fn connect(&self) -> zbus::Result<()>;
@@ -93,7 +90,10 @@ mod tests {
     #[test]
     fn address_from_path_extracts_mac() {
         let path = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF";
-        assert_eq!(address_from_path(path), Some("AA:BB:CC:DD:EE:FF".to_string()));
+        assert_eq!(
+            address_from_path(path),
+            Some("AA:BB:CC:DD:EE:FF".to_string())
+        );
     }
 
     #[test]

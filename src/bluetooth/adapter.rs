@@ -66,10 +66,7 @@ trait AgentManager1 {
     ) -> zbus::Result<()>;
 
     /// Unregister an agent.
-    async fn unregister_agent(
-        &self,
-        agent: &zbus::zvariant::ObjectPath<'_>,
-    ) -> zbus::Result<()>;
+    async fn unregister_agent(&self, agent: &zbus::zvariant::ObjectPath<'_>) -> zbus::Result<()>;
 
     /// Request that an agent be made the default.
     async fn request_default_agent(

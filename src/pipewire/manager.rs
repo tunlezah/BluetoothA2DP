@@ -29,7 +29,7 @@
 //! Default system output sink
 //! ```
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -165,7 +165,7 @@ fn filter_chain_config_path() -> PathBuf {
 }
 
 /// Write the filter-chain config for the given EQ bands to disk.
-pub fn write_filter_chain_config(bands: &[EqBand], path: &PathBuf) -> anyhow::Result<()> {
+pub fn write_filter_chain_config(bands: &[EqBand], path: &Path) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("Cannot create config dir: {}", parent.display()))?;
@@ -183,8 +183,8 @@ pub fn write_filter_chain_config(bands: &[EqBand], path: &PathBuf) -> anyhow::Re
 /// gain, frequency and Q from the current EQ band settings.
 fn generate_filter_chain_config(bands: &[EqBand]) -> String {
     let band_names = [
-        "eq_60hz", "eq_120hz", "eq_250hz", "eq_500hz", "eq_1khz",
-        "eq_2khz", "eq_4khz",  "eq_8khz",  "eq_12khz", "eq_16khz",
+        "eq_60hz", "eq_120hz", "eq_250hz", "eq_500hz", "eq_1khz", "eq_2khz", "eq_4khz", "eq_8khz",
+        "eq_12khz", "eq_16khz",
     ];
 
     let nodes: String = bands
@@ -262,7 +262,7 @@ fn generate_filter_chain_config(bands: &[EqBand]) -> String {
 ///
 /// Returns `None` if the binary is not found — the application continues
 /// without EQ DSP in that case, logging a clear warning.
-fn start_filter_chain(config_path: &PathBuf) -> Option<Child> {
+fn start_filter_chain(config_path: &Path) -> Option<Child> {
     match Command::new("pipewire-filter-chain")
         .arg("--config")
         .arg(config_path)

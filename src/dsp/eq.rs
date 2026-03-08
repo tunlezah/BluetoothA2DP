@@ -243,7 +243,12 @@ mod tests {
         let original = buffer.clone();
         eq.process_interleaved(&mut buffer);
         for (a, b) in original.iter().zip(buffer.iter()) {
-            assert!((a - b).abs() < 0.01, "Flat EQ should pass through: {} vs {}", a, b);
+            assert!(
+                (a - b).abs() < 0.01,
+                "Flat EQ should pass through: {} vs {}",
+                a,
+                b
+            );
         }
     }
 

@@ -6,11 +6,11 @@
 //! On connect, a full `StateSnapshot` is sent so the client can
 //! initialise its UI without a separate REST call.
 
+use axum::extract::ws::{Message, WebSocket};
 use axum::{
     extract::{State, WebSocketUpgrade},
     response::IntoResponse,
 };
-use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use tokio::sync::broadcast;
