@@ -407,6 +407,34 @@ const SoundSync = (() => {
     } catch (_) {}
   }
 
+  // ── Browser audio player ───────────────────────────────────────────────────
+
+  function getAudioPlayer() {
+    return document.getElementById('audio-player');
+  }
+
+  function toggleBrowserAudio() {
+    const audio = getAudioPlayer();
+    const btn   = document.getElementById('btn-listen');
+    if (!audio) return;
+
+    if (audio.paused) {
+      // Reload src so the browser opens a fresh HTTP connection to /audio/stream
+      audio.src = '/audio/stream';
+      audio.load();
+      audio.play().then(() => {
+        if (btn) btn.textContent = 'Stop';
+      }).catch(err => {
+        showToast('Could not start audio: ' + err.message, 'error');
+      });
+    } else {
+      audio.pause();
+      // Detach src to close the HTTP connection immediately
+      audio.src = '';
+      if (btn) btn.textContent = 'Listen';
+    }
+  }
+
   // ── Volume ─────────────────────────────────────────────────────────────────
 
   function setVolume(value) {
@@ -414,6 +442,8 @@ const SoundSync = (() => {
     if (icons[0]) {
       icons[0].textContent = value < 10 ? '🔇' : value < 50 ? '🔈' : '🔉';
     }
+    const audio = getAudioPlayer();
+    if (audio) audio.volume = Number(value) / 100;
   }
 
   // ── Theme ──────────────────────────────────────────────────────────────────
@@ -637,7 +667,7 @@ const SoundSync = (() => {
       const titleEl = document.getElementById('track-title');
       const artistEl = document.getElementById('track-artist-album');
       if (titleEl) titleEl.textContent = streaming ? streaming.name : (active ? active.name : '—');
-      if (artistEl) artistEl.textContent = streaming ? 'Playing through system speakers' : '—';
+      if (artistEl) artistEl.textContent = streaming ? 'Streaming to browser' : '—';
     }
   }
 
@@ -656,7 +686,7 @@ const SoundSync = (() => {
       const streaming = state.devices.find(d => d.state === 'audio_active');
       const active = state.devices.find(d => isDeviceConnected(d.state));
       if (titleEl) titleEl.textContent = streaming ? streaming.name : (active ? active.name : '—');
-      if (artistEl) artistEl.textContent = streaming ? 'Playing through system speakers' : '—';
+      if (artistEl) artistEl.textContent = streaming ? 'Streaming to browser' : '—';
     }
   }
 
@@ -806,6 +836,7 @@ const SoundSync = (() => {
     disconnectDevice,
     removeDevice,
     setVolume,
+    toggleBrowserAudio,
     setTheme,
     toggleSettings,
     applyName,
