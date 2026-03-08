@@ -24,7 +24,7 @@ use axum::{
     routing::{delete, get, post},
     Router,
 };
-use futures_util::stream;
+use futures_util::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
