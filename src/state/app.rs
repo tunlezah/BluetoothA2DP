@@ -14,6 +14,30 @@ use tokio::sync::{broadcast, RwLock};
 
 use crate::dsp::eq::EqBand;
 
+/// Track metadata received via Bluetooth AVRCP (MediaPlayer1).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TrackInfo {
+    /// Track title
+    pub title: Option<String>,
+    /// Artist name
+    pub artist: Option<String>,
+    /// Album name
+    pub album: Option<String>,
+    /// Duration in milliseconds
+    pub duration_ms: Option<u32>,
+}
+
+/// Playback status from AVRCP MediaPlayer1.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaybackStatus {
+    Playing,
+    Paused,
+    Stopped,
+    #[default]
+    Unknown,
+}
+
 /// Bluetooth connection state machine states.
 /// Follows the state machine defined in bluetooth_state_machine.md.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,6 +178,12 @@ pub enum SystemEvent {
     StreamStopped { address: String },
     /// EQ settings changed
     EqChanged,
+    /// Track metadata changed (AVRCP)
+    TrackChanged { track: Option<TrackInfo> },
+    /// Playback status changed (AVRCP)
+    PlaybackStatusChanged { status: PlaybackStatus },
+    /// Real-time spectrum analysis data (64 log-spaced bands, 0.0–1.0)
+    SpectrumData { bands: Vec<f32> },
     /// System error occurred
     Error { message: String },
     /// Full state snapshot (sent on WebSocket connect)
@@ -162,6 +192,8 @@ pub enum SystemEvent {
         devices: Vec<DeviceInfo>,
         eq: Vec<EqBand>,
         active_device: Option<String>,
+        track_info: Option<TrackInfo>,
+        playback_status: PlaybackStatus,
     },
 }
 
@@ -250,6 +282,10 @@ pub struct AppState {
     pub started_at: Instant,
     /// PipeWire status
     pub pipewire_ready: bool,
+    /// Current track info from AVRCP
+    pub track_info: Option<TrackInfo>,
+    /// Current playback status from AVRCP
+    pub playback_status: PlaybackStatus,
 }
 
 impl AppState {
@@ -263,6 +299,8 @@ impl AppState {
             config,
             started_at: Instant::now(),
             pipewire_ready: false,
+            track_info: None,
+            playback_status: PlaybackStatus::Unknown,
         }
     }
 
@@ -313,6 +351,8 @@ impl AppState {
             devices: self.device_list(),
             eq: self.eq_bands.clone(),
             active_device: self.active_device.clone(),
+            track_info: self.track_info.clone(),
+            playback_status: self.playback_status.clone(),
         }
     }
 }

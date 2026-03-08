@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="SoundSync — Bluetooth A2DP Sink with DSP Equaliser" />
+  <meta name="description" content="SoundSync — Bluetooth A2DP Sink with Audio Spectrum Visualiser" />
   <meta name="theme-color" content="#0b0b1a" />
   <title>SoundSync</title>
   <link rel="stylesheet" href="styles.css" />
@@ -23,12 +23,9 @@
         <!-- SoundSync logo mark -->
         <div class="logo-mark" aria-hidden="true">
           <svg width="22" height="22" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <!-- Speaker cone -->
             <path d="M4 8h3l5-5v16l-5-5H4V8z" fill="white" opacity="0.9"/>
-            <!-- Sound waves -->
             <path d="M14 7.5a5 5 0 0 1 0 7" stroke="white" stroke-width="1.5" stroke-linecap="round" opacity="0.8"/>
             <path d="M16.5 5a9 9 0 0 1 0 12" stroke="white" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
-            <!-- Bluetooth symbol -->
             <path d="M19 11l1.5-1.5-1.5-1.5M19 11l1.5 1.5L19 14M19 8v6" stroke="white" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" opacity="0.7"/>
           </svg>
         </div>
@@ -48,7 +45,6 @@
                 data-tooltip="Scan for devices"
                 aria-label="Scan for Bluetooth devices"
                 onclick="SoundSync.toggleScan()">
-          <!-- Bluetooth scan icon -->
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
             <path d="M8.5 1L12 4.5 9.5 7 12 9.5 8.5 13v-4.5L6 11l-1-1 3-3-3-3 1-1 2.5 2.5V1z"/>
             <circle cx="3.5" cy="8" r="1.2"/>
@@ -61,7 +57,6 @@
                 data-tooltip="Settings"
                 aria-label="Open settings"
                 onclick="SoundSync.toggleSettings()">
-          <!-- Gear icon -->
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
             <path fill-rule="evenodd" d="M7.2 1h1.6l.5 1.7a5 5 0 0 1 1.2.7l1.7-.5 1.1 1.1-.5 1.7a5 5 0 0 1 .7 1.2L15 7.2v1.6l-1.7.5a5 5 0 0 1-.7 1.2l.5 1.7-1.1 1.1-1.7-.5a5 5 0 0 1-1.2.7L8.8 15H7.2l-.5-1.7a5 5 0 0 1-1.2-.7l-1.7.5-1.1-1.1.5-1.7a5 5 0 0 1-.7-1.2L1 8.8V7.2l1.7-.5a5 5 0 0 1 .7-1.2L3 3.8l1.1-1.1 1.7.5a5 5 0 0 1 1.2-.7L7.2 1zM8 10a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/>
           </svg>
@@ -84,74 +79,84 @@
         </div>
       </section>
 
-      <!-- Equaliser panel -->
-      <section id="eq-panel" class="glass" aria-label="10-band equaliser">
-        <div class="eq-header">
-          <div class="panel-title">Equaliser</div>
-          <div class="eq-controls">
-            <!-- Preset selector -->
-            <select id="eq-preset-select"
-                    class="eq-preset-select"
-                    aria-label="EQ preset"
-                    onchange="SoundSync.applyPreset(this.value)">
-              <option value="">— Preset —</option>
-            </select>
-            <!-- Save preset -->
-            <button class="toggle-btn"
-                    onclick="SoundSync.savePreset()"
-                    aria-label="Save current EQ as preset"
-                    data-tooltip="Save preset">
-              💾
-            </button>
-            <!-- Reset -->
-            <button class="toggle-btn"
-                    onclick="SoundSync.resetEq()"
-                    aria-label="Reset EQ to flat"
-                    data-tooltip="Reset to flat">
-              ↺
-            </button>
-            <!-- Enable/disable toggle -->
-            <button id="eq-toggle"
-                    class="toggle-btn active"
-                    onclick="SoundSync.toggleEq()"
-                    aria-label="Toggle EQ on/off"
-                    data-tooltip="Enable/disable EQ">
-              EQ
-            </button>
+      <!-- ── Spectrum Analyser panel (replaces old EQ panel) ── -->
+      <section id="spectrum-panel" class="glass" aria-label="Audio spectrum analyser">
+        <div class="spectrum-header">
+          <div class="panel-title">Spectrum Analyser</div>
+          <div id="spectrum-status" class="spectrum-status-badge" data-active="false">
+            <span class="spectrum-status-dot" aria-hidden="true"></span>
+            <span id="spectrum-status-text">No Signal</span>
           </div>
         </div>
 
-        <!-- EQ band sliders -->
-        <div id="eq-sliders" role="group" aria-label="EQ band sliders">
-          <!-- Rendered by JavaScript -->
+        <!-- Canvas fills the remaining height -->
+        <div class="spectrum-canvas-wrap" id="spectrum-canvas-wrap">
+          <canvas id="spectrum-canvas" aria-hidden="true"></canvas>
+
+          <!-- Idle overlay — shown when no audio is active -->
+          <div class="spectrum-idle" id="spectrum-idle" aria-hidden="true">
+            <div class="spectrum-idle-bars" aria-hidden="true">
+              <span></span><span></span><span></span><span></span><span></span>
+              <span></span><span></span><span></span><span></span><span></span>
+            </div>
+            <span>Awaiting audio stream</span>
+          </div>
+
+          <!-- dB scale labels (left side) -->
+          <div class="spectrum-db-scale" aria-hidden="true">
+            <span>0</span>
+            <span>−20</span>
+            <span>−40</span>
+            <span>−60</span>
+            <span>−80</span>
+          </div>
+        </div>
+
+        <!-- Frequency axis labels -->
+        <div class="spectrum-freq-axis" aria-hidden="true">
+          <span>20Hz</span>
+          <span>50Hz</span>
+          <span>200Hz</span>
+          <span>1kHz</span>
+          <span>4kHz</span>
+          <span>10kHz</span>
+          <span>20kHz</span>
         </div>
       </section>
 
       <!-- Playback panel -->
-      <section id="playback-panel" class="glass" aria-label="Playback status">
+      <section id="playback-panel" class="glass" aria-label="Now playing">
         <div class="panel-title">Now Playing</div>
 
+        <!-- Track info from AVRCP (or device name fallback) -->
+        <div class="track-info-block">
+          <div id="track-title" class="track-title" aria-label="Track title">—</div>
+          <div id="track-artist-album" class="track-artist-album">—</div>
+
+          <!-- Playback status badge -->
+          <div id="playback-badge" class="playback-badge" data-status="unknown" aria-label="Playback status">
+            <span class="pb-icon" aria-hidden="true">■</span>
+            <span id="pb-status-text">No stream</span>
+          </div>
+        </div>
+
+        <!-- Source device -->
         <div class="playback-device-info">
           <div class="now-playing-label">Source Device</div>
           <div id="playback-device" class="now-playing-device">—</div>
-          <div id="playback-state" class="now-playing-status" style="color:var(--text-muted)">No active stream</div>
         </div>
 
-        <!-- Waveform visualiser (CSS animated) -->
-        <div id="waveform" class="waveform" aria-hidden="true">
-          <div class="wave-bar"></div>
-          <div class="wave-bar"></div>
-          <div class="wave-bar"></div>
-          <div class="wave-bar"></div>
-          <div class="wave-bar"></div>
-          <div class="wave-bar"></div>
-          <div class="wave-bar"></div>
-          <div class="wave-bar"></div>
-          <div class="wave-bar"></div>
-          <div class="wave-bar"></div>
+        <!-- Audio output routing notice -->
+        <div class="audio-output-notice" aria-label="Audio output information">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden="true" style="flex-shrink:0;opacity:0.6">
+            <path d="M2 4.5h2.5L7 2v10L4.5 9.5H2V4.5z"/>
+            <path d="M9 4.8a3 3 0 0 1 0 4.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" fill="none"/>
+            <path d="M10.5 3.2a5 5 0 0 1 0 7.6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" fill="none"/>
+          </svg>
+          <span>Audio plays through <strong>system speakers</strong></span>
         </div>
 
-        <!-- Stream statistics -->
+        <!-- Stream stats -->
         <div class="stream-stats">
           <div class="stat-row">
             <span class="stat-label">Stream</span>
@@ -167,7 +172,7 @@
           </div>
         </div>
 
-        <!-- Volume control (system output level indicator) -->
+        <!-- Volume (informational — actual output is PipeWire/ALSA) -->
         <div>
           <div class="panel-title" style="margin-bottom:8px">Output Level</div>
           <div class="volume-row">

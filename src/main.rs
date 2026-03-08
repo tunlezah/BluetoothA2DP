@@ -115,6 +115,18 @@ async fn main() -> anyhow::Result<()> {
         pipewire::manager::monitor_pipewire_state(pw_state).await;
     });
 
+    // Start real-time spectrum analyzer (captures from default sink monitor)
+    let spectrum_state = state.clone();
+    tokio::spawn(async move {
+        pipewire::spectrum::run_spectrum_analyzer(spectrum_state).await;
+    });
+
+    // Start AVRCP track-info monitor (polls MediaPlayer1 on connected devices)
+    let avrcp_state = state.clone();
+    tokio::spawn(async move {
+        bluetooth::avrcp::run_avrcp_monitor(avrcp_state).await;
+    });
+
     // Start PipeWire manager in a dedicated blocking thread.
     // PipeWire's main loop is synchronous and must run on a non-async thread.
     let eq_for_pw = equaliser.clone();
