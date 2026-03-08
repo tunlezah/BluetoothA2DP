@@ -24,8 +24,10 @@ use axum::{
     routing::{delete, get, post},
     Router,
 };
+use futures_util::stream;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex;
 
 use super::websocket::ws_handler;
@@ -165,6 +167,8 @@ pub fn build_router(
         .route("/api/eq/preset", post(post_apply_preset))
         .route("/api/eq/preset/save", post(post_save_preset))
         .route("/api/eq/preset/:name", delete(delete_preset))
+        // Audio stream
+        .route("/audio/stream", get(get_audio_stream))
         // WebSocket
         .route("/ws/status", get(ws_handler))
         // Static files — serve web/ directory
@@ -453,6 +457,107 @@ async fn delete_preset(
             ApiError::new(format!("Preset '{}' not found or is a built-in", name)),
         ))
     }
+}
+
+/// Stream live audio from the PipeWire/PulseAudio default sink to the browser.
+///
+/// Tries two strategies in order:
+///   1. `ffmpeg -f pulse` — reads directly from the PulseAudio default sink.
+///   2. Shell pipeline: `parec | ffmpeg` — parec captures raw PCM, ffmpeg encodes.
+///
+/// Output: Ogg/Opus stream at 128 kbps, delivered as chunked HTTP with
+/// `Content-Type: audio/ogg` so browsers can play it via an `<audio>` element.
+async fn get_audio_stream() -> impl axum::response::IntoResponse {
+    // Strategy 1: ffmpeg reading directly from PulseAudio
+    let child = tokio::process::Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "quiet",
+            "-f",
+            "pulse",
+            "-i",
+            "default",
+            "-acodec",
+            "libopus",
+            "-b:a",
+            "128k",
+            "-f",
+            "ogg",
+            "pipe:1",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+
+    // Strategy 2: parec capturing raw PCM piped through ffmpeg for encoding
+    let mut child = match child {
+        Ok(c) => c,
+        Err(_) => {
+            match tokio::process::Command::new("sh")
+                .args([
+                    "-c",
+                    "parec --format=s16le --rate=44100 --channels=2 --latency-msec=200 \
+                     | ffmpeg -hide_banner -loglevel quiet \
+                              -f s16le -ar 44100 -ac 2 -i pipe:0 \
+                              -acodec libopus -b:a 128k -f ogg pipe:1",
+                ])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!("Audio stream: failed to spawn encoder: {}", e);
+                    return axum::response::Response::builder()
+                        .status(StatusCode::SERVICE_UNAVAILABLE)
+                        .body(axum::body::Body::empty())
+                        .unwrap();
+                }
+            }
+        }
+    };
+
+    let stdout = match child.stdout.take() {
+        Some(s) => s,
+        None => {
+            let _ = child.kill().await;
+            return axum::response::Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(axum::body::Body::empty())
+                .unwrap();
+        }
+    };
+
+    tracing::info!(
+        "Audio stream: client connected, encoder pid {}",
+        child.id().unwrap_or(0)
+    );
+
+    // Wrap the child process stdout as an async byte stream.
+    // The child is carried in the unfold state so it gets killed when the
+    // stream ends (client disconnects or error).
+    let audio_stream = stream::unfold((stdout, child), |(mut reader, mut proc)| async move {
+        let mut buf = vec![0u8; 8192];
+        match reader.read(&mut buf).await {
+            Ok(0) | Err(_) => {
+                let _ = proc.kill().await;
+                None
+            }
+            Ok(n) => {
+                buf.truncate(n);
+                Some((Ok::<Vec<u8>, std::io::Error>(buf), (reader, proc)))
+            }
+        }
+    });
+
+    axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "audio/ogg")
+        .header("Cache-Control", "no-cache, no-store")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(axum::body::Body::from_stream(audio_stream))
+        .unwrap()
 }
 
 /// Serve static files from the embedded web assets.
