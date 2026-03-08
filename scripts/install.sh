@@ -198,6 +198,8 @@ install_system_packages() {
         # Build tools
         "pkg-config"
         "build-essential"
+        "clang"
+        "libclang-dev"
         "curl"
 
         # Python (for bluetoothctl helper)
@@ -353,9 +355,36 @@ enable_linger() {
     fi
 }
 
-# ── Build binary ──────────────────────────────────────────────────────────────
+# ── Find or build binary ───────────────────────────────────────────────────────
+find_prebuilt_binary() {
+    # Locations to check for an already-built binary (release preferred)
+    local candidates=(
+        "${REPO_DIR}/target/release/soundsync"
+        "${SCRIPT_DIR}/soundsync"
+        "${REPO_DIR}/soundsync"
+        "${REPO_DIR}/target/debug/soundsync"
+    )
+
+    for candidate in "${candidates[@]}"; do
+        if [ -x "${candidate}" ]; then
+            BINARY_PATH="${candidate}"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 build_binary() {
     header "Building SoundSync"
+
+    # Use a pre-built binary if one exists anywhere in the project tree
+    if find_prebuilt_binary; then
+        success "Pre-built binary found: ${BINARY_PATH} — skipping local build"
+        return
+    fi
+
+    info "No pre-built binary found — building from source..."
 
     # Ensure cargo is in PATH
     source "${HOME}/.cargo/env" 2>/dev/null || true
@@ -364,6 +393,15 @@ build_binary() {
     if ! command -v cargo &>/dev/null; then
         error "cargo not found after installing Rust. Please run: source ~/.cargo/env"
         exit 1
+    fi
+
+    # Fix stdbool.h / bindgen clang header issue
+    if command -v clang &>/dev/null; then
+        local clang_res
+        clang_res=$(clang -print-resource-dir 2>/dev/null || true)
+        if [ -d "${clang_res}/include" ]; then
+            export BINDGEN_EXTRA_CLANG_ARGS="-I${clang_res}/include"
+        fi
     fi
 
     cd "${REPO_DIR}"
