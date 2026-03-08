@@ -409,6 +409,10 @@ const SoundSync = (() => {
 
   // ── Browser audio player ───────────────────────────────────────────────────
 
+  // Track the pending play() promise so we can safely call pause() after it
+  // resolves — avoids Chrome's "play() interrupted by pause()" DOMException.
+  let _playPromise = null;
+
   function getAudioPlayer() {
     return document.getElementById('audio-player');
   }
@@ -422,16 +426,35 @@ const SoundSync = (() => {
       // Set src fresh each time so the browser opens a new HTTP connection.
       // Do NOT call audio.load() — that aborts the pending play() promise.
       audio.src = '/audio/stream';
-      audio.play().then(() => {
-        if (btn) btn.textContent = 'Stop';
-      }).catch(err => {
-        showToast('Could not start audio: ' + err.message, 'error');
-      });
+      _playPromise = audio.play();
+      if (_playPromise) {
+        _playPromise.then(() => {
+          _playPromise = null;
+          if (btn) btn.textContent = 'Stop';
+        }).catch(err => {
+          _playPromise = null;
+          // AbortError fires when Stop is clicked before buffering finishes — ignore.
+          if (err.name !== 'AbortError') {
+            showToast('Could not start audio: ' + err.message, 'error');
+          }
+          if (btn) btn.textContent = 'Listen';
+        });
+      }
     } else {
-      audio.pause();
-      // Detach src to close the HTTP connection immediately
-      audio.src = '';
-      if (btn) btn.textContent = 'Listen';
+      const stop = () => {
+        audio.pause();
+        // Detach src to close the HTTP connection immediately
+        audio.src = '';
+        if (btn) btn.textContent = 'Listen';
+      };
+      // If play() is still pending, wait for it to resolve before pausing.
+      // Calling pause() on a pending play() throws in Chrome.
+      if (_playPromise) {
+        _playPromise.then(stop).catch(() => {});
+        _playPromise = null;
+      } else {
+        stop();
+      }
     }
   }
 
