@@ -1,4 +1,5 @@
 //! PipeWire graph manager for SoundSync.
+#![allow(dead_code)]
 //!
 //! # Architecture
 //!

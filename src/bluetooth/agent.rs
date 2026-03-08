@@ -6,9 +6,7 @@
 //!
 //! Capability: "NoInputNoOutput" — accepts all pairing without PIN entry.
 
-use std::sync::{Arc, Mutex};
-
-use zbus::{interface, Connection, ObjectServer};
+use zbus::{interface, Connection};
 
 /// Whether the agent should accept pairing requests.
 /// Controlled by the scan/pairing window.

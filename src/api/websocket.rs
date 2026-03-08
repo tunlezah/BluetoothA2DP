@@ -12,20 +12,17 @@ use axum::{
     response::IntoResponse,
 };
 use futures_util::{SinkExt, StreamExt};
-use std::sync::Arc;
 use tokio::sync::broadcast;
 
-use crate::state::{AppStateHandle, SystemEvent};
+use crate::api::routes::ApiState;
+use crate::state::AppStateHandle;
 
 /// WebSocket upgrade handler.
 ///
 /// Upgrades the HTTP connection to a WebSocket and spawns a task to
 /// handle bidirectional messaging.
-pub async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<AppStateHandle>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<ApiState>) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_socket(socket, state.app))
 }
 
 /// Handle an individual WebSocket connection.
@@ -86,7 +83,7 @@ async fn handle_socket(socket: WebSocket, state: AppStateHandle) {
         while let Some(msg) = receiver.next().await {
             match msg {
                 Ok(Message::Close(_)) => break,
-                Ok(Message::Ping(data)) => {
+                Ok(Message::Ping(_)) => {
                     // Pong is handled automatically by axum
                 }
                 Ok(_) => {} // Ignore other messages from client

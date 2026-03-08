@@ -1,3 +1,3 @@
 mod app;
 
-pub use app::{AppState, AppStateHandle, BluetoothStatus, DeviceInfo, DeviceState, SystemEvent};
+pub use app::{AppStateHandle, BluetoothStatus, Config, DeviceInfo, DeviceState, SystemEvent};

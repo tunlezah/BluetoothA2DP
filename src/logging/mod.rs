@@ -1,4 +1,5 @@
 //! Structured logging setup for SoundSync.
+#![allow(dead_code)]
 //!
 //! Provides JSON-structured logging with event types matching the architecture
 //! spec (BT_DEVICE_CONNECTED, PIPEWIRE_SOURCE_CREATED, etc.)

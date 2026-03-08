@@ -45,18 +45,19 @@ pub enum BluetoothCommand {
     default_path = "/"
 )]
 trait ObjectManager {
-    async fn get_managed_objects(
+    #[allow(clippy::type_complexity)]
+    fn get_managed_objects(
         &self,
     ) -> zbus::Result<HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedValue>>>>;
 
     #[zbus(signal)]
-    async fn interfaces_added(
+    fn interfaces_added(
         path: OwnedObjectPath,
         interfaces: HashMap<String, HashMap<String, OwnedValue>>,
     );
 
     #[zbus(signal)]
-    async fn interfaces_removed(path: OwnedObjectPath, interfaces: Vec<String>);
+    fn interfaces_removed(path: OwnedObjectPath, interfaces: Vec<String>);
 }
 
 /// Proxy for the `org.bluez.Adapter1` D-Bus interface.
@@ -66,58 +67,58 @@ trait ObjectManager {
     default_path = "/org/bluez/hci0"
 )]
 trait Adapter1 {
-    async fn start_discovery(&self) -> zbus::Result<()>;
-    async fn stop_discovery(&self) -> zbus::Result<()>;
-    async fn remove_device(&self, device: &zbus::zvariant::ObjectPath<'_>) -> zbus::Result<()>;
+    fn start_discovery(&self) -> zbus::Result<()>;
+    fn stop_discovery(&self) -> zbus::Result<()>;
+    fn remove_device(&self, device: &zbus::zvariant::ObjectPath<'_>) -> zbus::Result<()>;
 
     #[zbus(property)]
-    async fn alias(&self) -> zbus::Result<String>;
+    fn alias(&self) -> zbus::Result<String>;
     #[zbus(property)]
-    async fn set_alias(&self, value: &str) -> zbus::Result<()>;
+    fn set_alias(&self, value: &str) -> zbus::Result<()>;
     #[zbus(property)]
-    async fn powered(&self) -> zbus::Result<bool>;
+    fn powered(&self) -> zbus::Result<bool>;
     #[zbus(property)]
-    async fn set_powered(&self, value: bool) -> zbus::Result<()>;
+    fn set_powered(&self, value: bool) -> zbus::Result<()>;
     #[zbus(property)]
-    async fn discoverable(&self) -> zbus::Result<bool>;
+    fn discoverable(&self) -> zbus::Result<bool>;
     #[zbus(property)]
-    async fn set_discoverable(&self, value: bool) -> zbus::Result<()>;
+    fn set_discoverable(&self, value: bool) -> zbus::Result<()>;
     #[zbus(property)]
-    async fn pairable(&self) -> zbus::Result<bool>;
+    fn pairable(&self) -> zbus::Result<bool>;
     #[zbus(property)]
-    async fn set_pairable(&self, value: bool) -> zbus::Result<()>;
+    fn set_pairable(&self, value: bool) -> zbus::Result<()>;
     #[zbus(property)]
-    async fn discovering(&self) -> zbus::Result<bool>;
+    fn discovering(&self) -> zbus::Result<bool>;
     #[zbus(property)]
-    async fn address(&self) -> zbus::Result<String>;
+    fn address(&self) -> zbus::Result<String>;
 }
 
 /// Proxy for `org.bluez.Device1`.
 #[proxy(interface = "org.bluez.Device1", default_service = "org.bluez")]
 trait Device1 {
-    async fn connect(&self) -> zbus::Result<()>;
-    async fn disconnect(&self) -> zbus::Result<()>;
-    async fn pair(&self) -> zbus::Result<()>;
-    async fn cancel_pairing(&self) -> zbus::Result<()>;
+    fn connect(&self) -> zbus::Result<()>;
+    fn disconnect(&self) -> zbus::Result<()>;
+    fn pair(&self) -> zbus::Result<()>;
+    fn cancel_pairing(&self) -> zbus::Result<()>;
 
     #[zbus(property)]
-    async fn address(&self) -> zbus::Result<String>;
+    fn address(&self) -> zbus::Result<String>;
     #[zbus(property)]
-    async fn name(&self) -> zbus::Result<String>;
+    fn name(&self) -> zbus::Result<String>;
     #[zbus(property)]
-    async fn alias(&self) -> zbus::Result<String>;
+    fn alias(&self) -> zbus::Result<String>;
     #[zbus(property)]
-    async fn connected(&self) -> zbus::Result<bool>;
+    fn connected(&self) -> zbus::Result<bool>;
     #[zbus(property)]
-    async fn paired(&self) -> zbus::Result<bool>;
+    fn paired(&self) -> zbus::Result<bool>;
     #[zbus(property)]
-    async fn trusted(&self) -> zbus::Result<bool>;
+    fn trusted(&self) -> zbus::Result<bool>;
     #[zbus(property)]
-    async fn set_trusted(&self, value: bool) -> zbus::Result<()>;
+    fn set_trusted(&self, value: bool) -> zbus::Result<()>;
     #[zbus(property)]
-    async fn uuids(&self) -> zbus::Result<Vec<String>>;
+    fn uuids(&self) -> zbus::Result<Vec<String>>;
     #[zbus(property)]
-    async fn rssi(&self) -> zbus::Result<i16>;
+    fn rssi(&self) -> zbus::Result<i16>;
 }
 
 /// Proxy for `org.bluez.AgentManager1`.
@@ -127,16 +128,13 @@ trait Device1 {
     default_path = "/org/bluez"
 )]
 trait AgentManager1 {
-    async fn register_agent(
+    fn register_agent(
         &self,
         agent: &zbus::zvariant::ObjectPath<'_>,
         capability: &str,
     ) -> zbus::Result<()>;
-    async fn unregister_agent(&self, agent: &zbus::zvariant::ObjectPath<'_>) -> zbus::Result<()>;
-    async fn request_default_agent(
-        &self,
-        agent: &zbus::zvariant::ObjectPath<'_>,
-    ) -> zbus::Result<()>;
+    fn unregister_agent(&self, agent: &zbus::zvariant::ObjectPath<'_>) -> zbus::Result<()>;
+    fn request_default_agent(&self, agent: &zbus::zvariant::ObjectPath<'_>) -> zbus::Result<()>;
 }
 
 /// The main Bluetooth manager.
@@ -325,7 +323,7 @@ impl BluetoothManager {
     }
 
     /// Main event monitoring loop — watches for D-Bus signals from BlueZ.
-    async fn monitor_events(connection: Connection, state: AppStateHandle, adapter_path: String) {
+    async fn monitor_events(connection: Connection, state: AppStateHandle, _adapter_path: String) {
         tracing::info!("Starting Bluetooth event monitor");
 
         // Use a periodic poll approach for device property changes.
@@ -370,9 +368,8 @@ impl BluetoothManager {
                 Some(signal) = interfaces_added_stream.next() => {
                     if let Ok(args) = signal.args() {
                         let path = args.path.as_str().to_owned();
-                        let interfaces = args.interfaces.clone();
-
-                        if let Some(device_props) = interfaces.get("org.bluez.Device1") {
+                        // Access args.interfaces by reference — OwnedValue is not Clone
+                        if let Some(device_props) = args.interfaces.get("org.bluez.Device1") {
                             if let Some(device_info) = extract_device_info(&path, device_props) {
                                 let addr = device_info.address.clone();
                                 let name = device_info.name.clone();
@@ -380,7 +377,7 @@ impl BluetoothManager {
 
                                 {
                                     let mut app_state = state.state.write().await;
-                                    app_state.upsert_device(device_info.clone());
+                                    app_state.upsert_device(device_info);
                                 }
 
                                 state.broadcast(SystemEvent::DeviceStateChanged {
@@ -457,6 +454,13 @@ impl BluetoothManager {
             let mut current_state = state.state.write().await;
             let mut any_changed = false;
 
+            // Collect updates to apply after mutable borrows of devices are dropped.
+            // This avoids borrow conflicts (E0499/E0502) when accessing both
+            // current_state.devices (mutably) and current_state.active_device.
+            let mut set_active: Option<String> = None;
+            let mut clear_active: Option<String> = None;
+            let mut new_devices: Vec<crate::state::DeviceInfo> = Vec::new();
+
             for (path, interfaces) in &objects {
                 if let Some(device_props) = interfaces.get("org.bluez.Device1") {
                     if let Some(new_info) = extract_device_info(path.as_str(), device_props) {
@@ -476,11 +480,11 @@ impl BluetoothManager {
                                     );
                                     existing.transition(DeviceState::Connected);
 
-                                    // Check for A2DP
+                                    // Check for A2DP — defer active_device assignment
                                     if new_info.has_a2dp {
                                         existing.has_a2dp = true;
                                         existing.transition(DeviceState::ProfileNegotiated);
-                                        current_state.active_device = Some(addr.clone());
+                                        set_active = Some(addr.clone());
                                     }
                                 } else {
                                     crate::logging::events::bt_device_disconnected(
@@ -488,9 +492,8 @@ impl BluetoothManager {
                                         "connection_lost",
                                     );
                                     existing.transition(DeviceState::Disconnected);
-                                    if current_state.active_device.as_deref() == Some(&addr) {
-                                        current_state.active_device = None;
-                                    }
+                                    // Defer active_device clear
+                                    clear_active = Some(addr.clone());
                                 }
                             }
 
@@ -499,12 +502,26 @@ impl BluetoothManager {
                                 existing.rssi = new_info.rssi;
                             }
                         } else {
-                            // New device found
-                            current_state.upsert_device(new_info);
+                            // New device found — collect to insert after loop
+                            new_devices.push(new_info);
                             any_changed = true;
                         }
                     }
                 }
+            }
+
+            // Apply deferred active_device changes (after mutable device borrows are done)
+            if let Some(new_active) = set_active {
+                current_state.active_device = Some(new_active);
+            }
+            if let Some(ref addr) = clear_active {
+                if current_state.active_device.as_deref() == Some(addr.as_str()) {
+                    current_state.active_device = None;
+                }
+            }
+            // Insert newly found devices
+            for dev in new_devices {
+                current_state.upsert_device(dev);
             }
 
             // Remove devices that are no longer in BlueZ
@@ -750,41 +767,57 @@ impl BluetoothManager {
 }
 
 /// Extract a DeviceInfo from a BlueZ Device1 properties map.
+///
+/// Uses `Value` enum pattern matching via `OwnedValue: Deref<Target = Value<'static>>`
+/// to avoid lifetime issues with `TryFrom` APIs in zvariant 4.x.
 fn extract_device_info(_path: &str, props: &HashMap<String, OwnedValue>) -> Option<DeviceInfo> {
-    let address = props
-        .get("Address")
-        .and_then(|v| <&str>::try_from(v).ok())
-        .map(|s| s.to_string())?;
+    use zbus::zvariant::Value;
+
+    let address = props.get("Address").and_then(|v| match &**v {
+        Value::Str(s) => Some(s.to_string()),
+        _ => None,
+    })?;
 
     let name = props
         .get("Alias")
-        .and_then(|v| <&str>::try_from(v).ok())
-        .or_else(|| props.get("Name").and_then(|v| <&str>::try_from(v).ok()))
-        .unwrap_or(address.as_str())
-        .to_string();
+        .or_else(|| props.get("Name"))
+        .and_then(|v| match &**v {
+            Value::Str(s) => Some(s.to_string()),
+            _ => None,
+        })
+        .unwrap_or_else(|| address.clone());
 
     let connected = props
         .get("Connected")
-        .and_then(|v| bool::try_from(v).ok())
-        .unwrap_or(false);
+        .is_some_and(|v| matches!(&**v, Value::Bool(true)));
 
     let paired = props
         .get("Paired")
-        .and_then(|v| bool::try_from(v).ok())
-        .unwrap_or(false);
+        .is_some_and(|v| matches!(&**v, Value::Bool(true)));
 
     let trusted = props
         .get("Trusted")
-        .and_then(|v| bool::try_from(v).ok())
-        .unwrap_or(false);
+        .is_some_and(|v| matches!(&**v, Value::Bool(true)));
 
     let uuids: Vec<String> = props
         .get("UUIDs")
-        .and_then(|v| v.try_clone().ok())
-        .and_then(|v| Vec::<String>::try_from(v).ok())
+        .and_then(|v| match &**v {
+            Value::Array(arr) => Some(
+                arr.iter()
+                    .filter_map(|item| match item {
+                        Value::Str(s) => Some(s.to_string()),
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        })
         .unwrap_or_default();
 
-    let rssi = props.get("RSSI").and_then(|v| i16::try_from(v).ok());
+    let rssi = props.get("RSSI").and_then(|v| match &**v {
+        Value::I16(i) => Some(*i),
+        _ => None,
+    });
 
     let has_a2dp = has_a2dp(&uuids);
 

@@ -157,7 +157,7 @@ fn equaliser_planar_processing() {
     let mut left = vec![0.5f32; 64];
     let mut right = vec![-0.3f32; 64];
     let orig_l = left.clone();
-    let orig_r = right.clone();
+    let _orig_r = right.clone();
 
     // Flat EQ should preserve signal
     eq.process_planar(&mut left, &mut right);

@@ -12,43 +12,43 @@ use zbus::{proxy, Connection};
 )]
 trait Adapter1 {
     /// Start device discovery.
-    async fn start_discovery(&self) -> zbus::Result<()>;
+    fn start_discovery(&self) -> zbus::Result<()>;
     /// Stop device discovery.
-    async fn stop_discovery(&self) -> zbus::Result<()>;
+    fn stop_discovery(&self) -> zbus::Result<()>;
     /// Remove a device from the adapter.
-    async fn remove_device(&self, device: &zbus::zvariant::ObjectPath<'_>) -> zbus::Result<()>;
+    fn remove_device(&self, device: &zbus::zvariant::ObjectPath<'_>) -> zbus::Result<()>;
 
     /// Adapter name (shown during Bluetooth discovery).
     #[zbus(property)]
-    async fn alias(&self) -> zbus::Result<String>;
+    fn alias(&self) -> zbus::Result<String>;
     #[zbus(property)]
-    async fn set_alias(&self, value: &str) -> zbus::Result<()>;
+    fn set_alias(&self, value: &str) -> zbus::Result<()>;
 
     /// Whether the adapter is powered.
     #[zbus(property)]
-    async fn powered(&self) -> zbus::Result<bool>;
+    fn powered(&self) -> zbus::Result<bool>;
     #[zbus(property)]
-    async fn set_powered(&self, value: bool) -> zbus::Result<()>;
+    fn set_powered(&self, value: bool) -> zbus::Result<()>;
 
     /// Whether the adapter is discoverable (visible to other devices).
     #[zbus(property)]
-    async fn discoverable(&self) -> zbus::Result<bool>;
+    fn discoverable(&self) -> zbus::Result<bool>;
     #[zbus(property)]
-    async fn set_discoverable(&self, value: bool) -> zbus::Result<()>;
+    fn set_discoverable(&self, value: bool) -> zbus::Result<()>;
 
     /// Whether the adapter is pairable.
     #[zbus(property)]
-    async fn pairable(&self) -> zbus::Result<bool>;
+    fn pairable(&self) -> zbus::Result<bool>;
     #[zbus(property)]
-    async fn set_pairable(&self, value: bool) -> zbus::Result<()>;
+    fn set_pairable(&self, value: bool) -> zbus::Result<()>;
 
     /// Whether the adapter is currently discovering.
     #[zbus(property)]
-    async fn discovering(&self) -> zbus::Result<bool>;
+    fn discovering(&self) -> zbus::Result<bool>;
 
     /// Adapter hardware address.
     #[zbus(property)]
-    async fn address(&self) -> zbus::Result<String>;
+    fn address(&self) -> zbus::Result<String>;
 }
 
 /// Proxy for the `org.bluez.AgentManager1` D-Bus interface.
@@ -59,20 +59,17 @@ trait Adapter1 {
 )]
 trait AgentManager1 {
     /// Register an agent at the given object path with the given capability.
-    async fn register_agent(
+    fn register_agent(
         &self,
         agent: &zbus::zvariant::ObjectPath<'_>,
         capability: &str,
     ) -> zbus::Result<()>;
 
     /// Unregister an agent.
-    async fn unregister_agent(&self, agent: &zbus::zvariant::ObjectPath<'_>) -> zbus::Result<()>;
+    fn unregister_agent(&self, agent: &zbus::zvariant::ObjectPath<'_>) -> zbus::Result<()>;
 
     /// Request that an agent be made the default.
-    async fn request_default_agent(
-        &self,
-        agent: &zbus::zvariant::ObjectPath<'_>,
-    ) -> zbus::Result<()>;
+    fn request_default_agent(&self, agent: &zbus::zvariant::ObjectPath<'_>) -> zbus::Result<()>;
 }
 
 /// High-level adapter management operations.
@@ -83,7 +80,7 @@ pub struct AdapterManager<'a> {
 
 impl<'a> AdapterManager<'a> {
     /// Create a new AdapterManager for the given adapter path.
-    pub async fn new(connection: &'a Connection, adapter_path: &str) -> anyhow::Result<Self> {
+    pub async fn new(connection: &'a Connection, adapter_path: &'a str) -> anyhow::Result<Self> {
         let adapter = Adapter1Proxy::builder(connection)
             .path(adapter_path)?
             .build()
