@@ -419,9 +419,9 @@ const SoundSync = (() => {
     if (!audio) return;
 
     if (audio.paused) {
-      // Reload src so the browser opens a fresh HTTP connection to /audio/stream
+      // Set src fresh each time so the browser opens a new HTTP connection.
+      // Do NOT call audio.load() — that aborts the pending play() promise.
       audio.src = '/audio/stream';
-      audio.load();
       audio.play().then(() => {
         if (btn) btn.textContent = 'Stop';
       }).catch(err => {

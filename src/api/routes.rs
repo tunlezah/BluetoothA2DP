@@ -461,14 +461,13 @@ async fn delete_preset(
 
 /// Stream live audio from the PipeWire/PulseAudio default sink to the browser.
 ///
-/// Tries two strategies in order:
-///   1. `ffmpeg -f pulse` — reads directly from the PulseAudio default sink.
-///   2. Shell pipeline: `parec | ffmpeg` — parec captures raw PCM, ffmpeg encodes.
-///
-/// Output: Ogg/Opus stream at 128 kbps, delivered as chunked HTTP with
-/// `Content-Type: audio/ogg` so browsers can play it via an `<audio>` element.
+/// Tries three strategies in order:
+///   1. `ffmpeg -f pulse` — Ogg/Opus 128 kbps (best quality, needs ffmpeg).
+///   2. `parec | ffmpeg` shell pipeline — Ogg/Opus via parec + ffmpeg.
+///   3. `parec` raw PCM wrapped in a streaming WAV header — no ffmpeg needed,
+///      universally supported by browsers.
 async fn get_audio_stream() -> impl axum::response::IntoResponse {
-    // Strategy 1: ffmpeg reading directly from PulseAudio
+    // ── Strategy 1: ffmpeg reading directly from PulseAudio ──────────────────
     let child = tokio::process::Command::new("ffmpeg")
         .args([
             "-hide_banner",
@@ -490,53 +489,126 @@ async fn get_audio_stream() -> impl axum::response::IntoResponse {
         .stderr(std::process::Stdio::null())
         .spawn();
 
-    // Strategy 2: parec capturing raw PCM piped through ffmpeg for encoding
-    let mut child = match child {
-        Ok(c) => c,
-        Err(_) => {
-            match tokio::process::Command::new("sh")
-                .args([
-                    "-c",
-                    "parec --format=s16le --rate=44100 --channels=2 --latency-msec=200 \
-                     | ffmpeg -hide_banner -loglevel quiet \
-                              -f s16le -ar 44100 -ac 2 -i pipe:0 \
-                              -acodec libopus -b:a 128k -f ogg pipe:1",
-                ])
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-            {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::error!("Audio stream: failed to spawn encoder: {}", e);
-                    return axum::response::Response::builder()
-                        .status(StatusCode::SERVICE_UNAVAILABLE)
-                        .body(axum::body::Body::empty())
-                        .unwrap();
+    if let Ok(mut child) = child {
+        if let Some(stdout) = child.stdout.take() {
+            tracing::info!(
+                "Audio stream: ffmpeg/pulse encoder started (pid {})",
+                child.id().unwrap_or(0)
+            );
+            return ogg_stream_response(stdout, child);
+        }
+        let _ = child.kill().await;
+    }
+
+    // ── Strategy 2: parec | ffmpeg shell pipeline ─────────────────────────────
+    let sh_child = tokio::process::Command::new("sh")
+        .args([
+            "-c",
+            "parec --format=s16le --rate=44100 --channels=2 --latency-msec=200 \
+             | ffmpeg -hide_banner -loglevel quiet \
+                      -f s16le -ar 44100 -ac 2 -i pipe:0 \
+                      -acodec libopus -b:a 128k -f ogg pipe:1",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+
+    if let Ok(mut child) = sh_child {
+        if let Some(stdout) = child.stdout.take() {
+            tracing::info!("Audio stream: parec|ffmpeg pipeline started");
+            return ogg_stream_response(stdout, child);
+        }
+        let _ = child.kill().await;
+    }
+
+    // ── Strategy 3: parec → streaming WAV (no ffmpeg required) ───────────────
+    // Stereo 44100 Hz 16-bit signed-LE PCM wrapped in a WAV container whose
+    // data-chunk size field is set to 0xFFFF_FFFE so browsers stream forever.
+    let parec = tokio::process::Command::new("parec")
+        .args([
+            "--format=s16le",
+            "--rate=44100",
+            "--channels=2",
+            "--latency-msec=200",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+
+    match parec {
+        Ok(mut child) => {
+            let stdout = match child.stdout.take() {
+                Some(s) => s,
+                None => {
+                    let _ = child.kill().await;
+                    return error_response(StatusCode::INTERNAL_SERVER_ERROR);
                 }
-            }
+            };
+
+            tracing::info!("Audio stream: parec WAV fallback started");
+
+            // Build a minimal 44-byte WAV header for streaming:
+            // - RIFF chunk size and data chunk size both set to max (0xFFFF_FFFE)
+            //   so the browser never thinks the file is complete.
+            const CHANNELS: u16 = 2;
+            const SAMPLE_RATE: u32 = 44_100;
+            const BITS: u16 = 16;
+            let byte_rate = SAMPLE_RATE * CHANNELS as u32 * BITS as u32 / 8;
+            let block_align = CHANNELS * BITS / 8;
+            let data_size: u32 = 0xFFFF_FFFE;
+
+            let mut wav_header = Vec::with_capacity(44);
+            wav_header.extend_from_slice(b"RIFF");
+            wav_header.extend_from_slice(&(data_size + 36).to_le_bytes());
+            wav_header.extend_from_slice(b"WAVE");
+            wav_header.extend_from_slice(b"fmt ");
+            wav_header.extend_from_slice(&16u32.to_le_bytes());
+            wav_header.extend_from_slice(&1u16.to_le_bytes()); // PCM
+            wav_header.extend_from_slice(&CHANNELS.to_le_bytes());
+            wav_header.extend_from_slice(&SAMPLE_RATE.to_le_bytes());
+            wav_header.extend_from_slice(&byte_rate.to_le_bytes());
+            wav_header.extend_from_slice(&block_align.to_le_bytes());
+            wav_header.extend_from_slice(&BITS.to_le_bytes());
+            wav_header.extend_from_slice(b"data");
+            wav_header.extend_from_slice(&data_size.to_le_bytes());
+
+            // Stream: header first, then continuous raw PCM from parec.
+            let header_chunk = Ok::<Vec<u8>, std::io::Error>(wav_header);
+            let pcm_stream = stream::unfold((stdout, child), |(mut reader, mut proc)| async move {
+                let mut buf = vec![0u8; 8192];
+                match reader.read(&mut buf).await {
+                    Ok(0) | Err(_) => {
+                        let _ = proc.kill().await;
+                        None
+                    }
+                    Ok(n) => {
+                        buf.truncate(n);
+                        Some((Ok::<Vec<u8>, std::io::Error>(buf), (reader, proc)))
+                    }
+                }
+            });
+
+            let body_stream = stream::once(async move { header_chunk }).chain(pcm_stream);
+
+            axum::response::Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "audio/wav")
+                .header("Cache-Control", "no-cache, no-store")
+                .body(axum::body::Body::from_stream(body_stream))
+                .unwrap()
         }
-    };
-
-    let stdout = match child.stdout.take() {
-        Some(s) => s,
-        None => {
-            let _ = child.kill().await;
-            return axum::response::Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(axum::body::Body::empty())
-                .unwrap();
+        Err(e) => {
+            tracing::error!("Audio stream: no capture tool available: {}", e);
+            error_response(StatusCode::SERVICE_UNAVAILABLE)
         }
-    };
+    }
+}
 
-    tracing::info!(
-        "Audio stream: client connected, encoder pid {}",
-        child.id().unwrap_or(0)
-    );
-
-    // Wrap the child process stdout as an async byte stream.
-    // The child is carried in the unfold state so it gets killed when the
-    // stream ends (client disconnects or error).
+/// Build a streaming Ogg response from an already-spawned child process.
+fn ogg_stream_response(
+    stdout: tokio::process::ChildStdout,
+    child: tokio::process::Child,
+) -> axum::response::Response {
     let audio_stream = stream::unfold((stdout, child), |(mut reader, mut proc)| async move {
         let mut buf = vec![0u8; 8192];
         match reader.read(&mut buf).await {
@@ -555,8 +627,14 @@ async fn get_audio_stream() -> impl axum::response::IntoResponse {
         .status(StatusCode::OK)
         .header("Content-Type", "audio/ogg")
         .header("Cache-Control", "no-cache, no-store")
-        .header("X-Content-Type-Options", "nosniff")
         .body(axum::body::Body::from_stream(audio_stream))
+        .unwrap()
+}
+
+fn error_response(status: StatusCode) -> axum::response::Response {
+    axum::response::Response::builder()
+        .status(status)
+        .body(axum::body::Body::empty())
         .unwrap()
 }
 
