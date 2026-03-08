@@ -462,8 +462,8 @@ async fn delete_preset(
 /// Stream live audio from the PipeWire/PulseAudio default sink to the browser.
 ///
 /// Tries three strategies in order:
-///   1. `ffmpeg -f pulse` — Ogg/Opus 128 kbps (best quality, needs ffmpeg).
-///   2. `parec | ffmpeg` shell pipeline — Ogg/Opus via parec + ffmpeg.
+///   1. `ffmpeg -f pulse` — MP3 128 kbps (works in all browsers incl. Safari).
+///   2. `parec | ffmpeg` shell pipeline — MP3 via parec + ffmpeg.
 ///   3. `parec` raw PCM wrapped in a streaming WAV header — no ffmpeg needed,
 ///      universally supported by browsers.
 async fn get_audio_stream() -> impl axum::response::IntoResponse {
@@ -478,11 +478,11 @@ async fn get_audio_stream() -> impl axum::response::IntoResponse {
             "-i",
             "default",
             "-acodec",
-            "libopus",
+            "libmp3lame",
             "-b:a",
             "128k",
             "-f",
-            "ogg",
+            "mp3",
             "pipe:1",
         ])
         .stdout(std::process::Stdio::piped())
@@ -492,10 +492,10 @@ async fn get_audio_stream() -> impl axum::response::IntoResponse {
     if let Ok(mut child) = child {
         if let Some(stdout) = child.stdout.take() {
             tracing::info!(
-                "Audio stream: ffmpeg/pulse encoder started (pid {})",
+                "Audio stream: ffmpeg/pulse MP3 encoder started (pid {})",
                 child.id().unwrap_or(0)
             );
-            return ogg_stream_response(stdout, child);
+            return compressed_stream_response(stdout, child, "audio/mpeg");
         }
         let _ = child.kill().await;
     }
@@ -507,7 +507,7 @@ async fn get_audio_stream() -> impl axum::response::IntoResponse {
             "parec --format=s16le --rate=44100 --channels=2 --latency-msec=200 \
              | ffmpeg -hide_banner -loglevel quiet \
                       -f s16le -ar 44100 -ac 2 -i pipe:0 \
-                      -acodec libopus -b:a 128k -f ogg pipe:1",
+                      -acodec libmp3lame -b:a 128k -f mp3 pipe:1",
         ])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -515,8 +515,8 @@ async fn get_audio_stream() -> impl axum::response::IntoResponse {
 
     if let Ok(mut child) = sh_child {
         if let Some(stdout) = child.stdout.take() {
-            tracing::info!("Audio stream: parec|ffmpeg pipeline started");
-            return ogg_stream_response(stdout, child);
+            tracing::info!("Audio stream: parec|ffmpeg MP3 pipeline started");
+            return compressed_stream_response(stdout, child, "audio/mpeg");
         }
         let _ = child.kill().await;
     }
@@ -604,10 +604,11 @@ async fn get_audio_stream() -> impl axum::response::IntoResponse {
     }
 }
 
-/// Build a streaming Ogg response from an already-spawned child process.
-fn ogg_stream_response(
+/// Build a streaming compressed-audio response from an already-spawned child process.
+fn compressed_stream_response(
     stdout: tokio::process::ChildStdout,
     child: tokio::process::Child,
+    content_type: &'static str,
 ) -> axum::response::Response {
     let audio_stream = stream::unfold((stdout, child), |(mut reader, mut proc)| async move {
         let mut buf = vec![0u8; 8192];
@@ -625,7 +626,7 @@ fn ogg_stream_response(
 
     axum::response::Response::builder()
         .status(StatusCode::OK)
-        .header("Content-Type", "audio/ogg")
+        .header("Content-Type", content_type)
         .header("Cache-Control", "no-cache, no-store")
         .body(axum::body::Body::from_stream(audio_stream))
         .unwrap()
