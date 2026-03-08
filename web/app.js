@@ -27,6 +27,7 @@ const SoundSync = (() => {
     currentTrack: null,      // { title, artist, album, duration_ms } | null
     playbackStatus: 'unknown', // 'playing' | 'paused' | 'stopped' | 'unknown'
     isStreaming: false,
+    theme: 'dark',           // 'dark' | 'light' | 'system'
   };
 
   // ── Spectrum analyser ──────────────────────────────────────────────────────
@@ -208,6 +209,7 @@ const SoundSync = (() => {
   // ── Initialisation ─────────────────────────────────────────────────────────
 
   function init() {
+    initTheme();
     spectrum.init();
     connectWebSocket();
 
@@ -412,6 +414,23 @@ const SoundSync = (() => {
     if (icons[0]) {
       icons[0].textContent = value < 10 ? '🔇' : value < 50 ? '🔈' : '🔉';
     }
+  }
+
+  // ── Theme ──────────────────────────────────────────────────────────────────
+
+  function setTheme(theme) {
+    state.theme = theme;
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('soundsync-theme', theme);
+    // Update active button
+    document.querySelectorAll('.theme-opt').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.for === theme);
+    });
+  }
+
+  function initTheme() {
+    const saved = localStorage.getItem('soundsync-theme') || 'dark';
+    setTheme(saved);
   }
 
   // ── Settings ───────────────────────────────────────────────────────────────
@@ -787,6 +806,7 @@ const SoundSync = (() => {
     disconnectDevice,
     removeDevice,
     setVolume,
+    setTheme,
     toggleSettings,
     applyName,
     refresh,
