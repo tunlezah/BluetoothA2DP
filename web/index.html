@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -40,6 +40,34 @@
         </div>
       </div>
       <div class="header-right">
+        <!-- Theme switcher: Dark / System / Light -->
+        <div class="theme-switcher" role="group" aria-label="Color theme">
+          <button class="theme-opt" data-for="dark" title="Dark mode"
+                  aria-label="Dark mode" onclick="SoundSync.setTheme('dark')">
+            <!-- moon -->
+            <svg width="13" height="13" viewBox="0 0 14 14" fill="currentColor" aria-hidden="true">
+              <path d="M12.3 9.6A6 6 0 0 1 4.4 1.7a6 6 0 1 0 7.9 7.9z"/>
+            </svg>
+          </button>
+          <button class="theme-opt" data-for="system" title="Follow system"
+                  aria-label="System theme" onclick="SoundSync.setTheme('system')">
+            <!-- monitor -->
+            <svg width="13" height="13" viewBox="0 0 14 14" fill="currentColor" aria-hidden="true">
+              <rect x="1" y="1" width="12" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/>
+              <path d="M5 13h4M7 10v3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+            </svg>
+          </button>
+          <button class="theme-opt" data-for="light" title="Light mode"
+                  aria-label="Light mode" onclick="SoundSync.setTheme('light')">
+            <!-- sun -->
+            <svg width="13" height="13" viewBox="0 0 14 14" fill="currentColor" aria-hidden="true">
+              <circle cx="7" cy="7" r="2.8"/>
+              <path d="M7 1v1.5M7 11.5V13M1 7h1.5M11.5 7H13M3.1 3.1l1 1M9.9 9.9l1 1M10.9 3.1l-1 1M4.1 9.9l-1 1"
+                    stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+
         <button id="btn-scan"
                 class="icon-btn"
                 data-tooltip="Scan for devices"

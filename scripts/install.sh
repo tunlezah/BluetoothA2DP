@@ -47,7 +47,9 @@ SERVICE_FILE="${SERVICE_DIR}/soundsync.service"
 LOG_DIR="${HOME}/.local/share/soundsync"
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
-PORT=8080
+DEFAULT_PORT=8080
+PORT=${DEFAULT_PORT}
+PORT_EXPLICIT=false       # set to true when user passes --port explicitly
 DEVICE_NAME="SoundSync"
 ADAPTER="hci0"
 UNINSTALL=false
@@ -58,6 +60,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --port|-p)
             PORT="$2"
+            PORT_EXPLICIT=true
             shift 2
             ;;
         --name|-n)
@@ -98,10 +101,71 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ── Validation ────────────────────────────────────────────────────────────────
+
+# Returns 0 (true) if $1 is available, 1 if in use.
+is_port_in_use() {
+    local p="$1"
+    # Try ss first (iproute2), then lsof, then a /dev/tcp probe
+    if command -v ss &>/dev/null; then
+        ss -tlnH "sport = :${p}" 2>/dev/null | grep -q ":${p}" && return 0
+    fi
+    if command -v lsof &>/dev/null; then
+        lsof -iTCP:"${p}" -sTCP:LISTEN -t &>/dev/null && return 0
+    fi
+    # Fallback: try binding (requires bash /dev/tcp support)
+    (echo "" > /dev/tcp/127.0.0.1/"${p}") 2>/dev/null && return 0
+    return 1  # port appears free
+}
+
+# Find the next free port starting from $1.
+find_free_port() {
+    local p="$1"
+    while is_port_in_use "${p}"; do
+        ((p++))
+        if [ "${p}" -gt 65535 ]; then
+            error "Could not find a free port above ${1}."
+            exit 1
+        fi
+    done
+    echo "${p}"
+}
+
 validate_port() {
     if ! [[ "${PORT}" =~ ^[0-9]+$ ]] || [ "${PORT}" -lt 1024 ] || [ "${PORT}" -gt 65535 ]; then
         error "Port must be between 1024 and 65535, got: ${PORT}"
         exit 1
+    fi
+
+    if is_port_in_use "${PORT}"; then
+        warn "Port ${PORT} is already in use."
+        local suggested
+        suggested=$(find_free_port $((PORT + 1)))
+
+        if [ "${PORT_EXPLICIT}" = true ]; then
+            # The user specifically asked for this port — give them a choice.
+            warn "You requested --port ${PORT} but it is taken."
+        fi
+
+        if [ -t 0 ]; then
+            # Interactive terminal — prompt the user.
+            echo -en "  ${BLD}Enter a different port${RST} [${suggested}]: "
+            read -r user_port
+            user_port="${user_port:-${suggested}}"
+            if ! [[ "${user_port}" =~ ^[0-9]+$ ]] || [ "${user_port}" -lt 1024 ] || [ "${user_port}" -gt 65535 ]; then
+                error "Invalid port: ${user_port}"
+                exit 1
+            fi
+            if is_port_in_use "${user_port}"; then
+                error "Port ${user_port} is also in use. Please free a port and retry."
+                exit 1
+            fi
+            PORT="${user_port}"
+        else
+            # Non-interactive (e.g. piped script) — auto-select.
+            info "Auto-selecting next free port: ${suggested}"
+            PORT="${suggested}"
+        fi
+        success "Using port ${PORT}"
     fi
 }
 

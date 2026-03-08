@@ -15,7 +15,10 @@
   padding: 0;
 }
 
-:root {
+/* ── Theme variables ─────────────────────────────────────────────────────── */
+/* Dark theme (default, and explicit data-theme="dark")                       */
+:root,
+:root[data-theme="dark"] {
   --teal:       #1db8c0;
   --teal-dim:   #0e8a91;
   --orange:     #ff8c42;
@@ -34,7 +37,59 @@
   --text-dim:   #8a8aaa;
   --text-muted: #555570;
 
+  --spectrum-canvas-bg:     rgba(0, 0, 0, 0.25);
+  --spectrum-canvas-border: rgba(255, 255, 255, 0.06);
+  --grid-line:              rgba(255, 255, 255, 0.05);
+  --idle-bar:               rgba(255, 255, 255, 0.08);
+
   --anim: 140ms ease;
+  color-scheme: dark;
+}
+
+/* Light theme (explicit data-theme="light") */
+:root[data-theme="light"] {
+  --bg:         #eef1f7;
+  --bg-mid:     #e4e8f0;
+
+  --glass-bg:         rgba(255, 255, 255, 0.78);
+  --glass-bg-hover:   rgba(255, 255, 255, 0.95);
+  --glass-border:     rgba(0, 0, 0, 0.10);
+  --glass-shadow:     0 8px 32px rgba(0, 0, 0, 0.10);
+
+  --text:       #1a1a2e;
+  --text-dim:   #4a4a6a;
+  --text-muted: #8888a0;
+
+  --spectrum-canvas-bg:     rgba(255, 255, 255, 0.35);
+  --spectrum-canvas-border: rgba(0, 0, 0, 0.08);
+  --grid-line:              rgba(0, 0, 0, 0.04);
+  --idle-bar:               rgba(0, 0, 0, 0.08);
+
+  color-scheme: light;
+}
+
+/* System theme: follow OS preference */
+@media (prefers-color-scheme: light) {
+  :root[data-theme="system"] {
+    --bg:         #eef1f7;
+    --bg-mid:     #e4e8f0;
+
+    --glass-bg:         rgba(255, 255, 255, 0.78);
+    --glass-bg-hover:   rgba(255, 255, 255, 0.95);
+    --glass-border:     rgba(0, 0, 0, 0.10);
+    --glass-shadow:     0 8px 32px rgba(0, 0, 0, 0.10);
+
+    --text:       #1a1a2e;
+    --text-dim:   #4a4a6a;
+    --text-muted: #8888a0;
+
+    --spectrum-canvas-bg:     rgba(255, 255, 255, 0.35);
+    --spectrum-canvas-border: rgba(0, 0, 0, 0.08);
+    --grid-line:              rgba(0, 0, 0, 0.04);
+    --idle-bar:               rgba(0, 0, 0, 0.08);
+
+    color-scheme: light;
+  }
 }
 
 html, body {
@@ -77,6 +132,15 @@ body::before {
     radial-gradient(ellipse 50% 60% at 60% 20%,  rgba(255, 140, 66, 0.07) 0%, transparent 60%);
   pointer-events: none;
   z-index: 0;
+  transition: opacity 300ms ease;
+}
+
+/* Slightly lighter gradient accents in light mode */
+:root[data-theme="light"] body::before,
+@media (prefers-color-scheme: light) {
+  :root[data-theme="system"] body::before {
+    opacity: 0.5;
+  }
 }
 
 /* ── Main layout grid ────────────────────────────────────────────────────── */
@@ -393,8 +457,8 @@ body::before {
   min-height: 0;
   border-radius: 12px;
   overflow: hidden;
-  background: rgba(0,0,0,0.25);
-  border: 1px solid rgba(255,255,255,0.06);
+  background: var(--spectrum-canvas-bg);
+  border: 1px solid var(--spectrum-canvas-border);
 }
 
 #spectrum-canvas {
@@ -427,7 +491,7 @@ body::before {
 .spectrum-idle-bars span {
   width: 4px;
   border-radius: 2px;
-  background: rgba(255,255,255,0.08);
+  background: var(--idle-bar);
   animation: idle-bar 2.4s ease-in-out infinite;
 }
 
@@ -746,6 +810,43 @@ body::before {
 @keyframes slide-in {
   from { opacity: 0; transform: translateY(-8px); }
   to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Theme switcher ─────────────────────────────────────────────────────── */
+
+.theme-switcher {
+  display: flex;
+  align-items: center;
+  border-radius: 10px;
+  border: 1px solid var(--glass-border);
+  overflow: hidden;
+  background: var(--glass-bg);
+}
+
+.theme-opt {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--glass-border);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background var(--anim), color var(--anim);
+}
+
+.theme-opt:last-child { border-right: none; }
+
+.theme-opt:hover {
+  background: var(--glass-bg-hover);
+  color: var(--text);
+}
+
+.theme-opt.active {
+  background: rgba(29, 184, 192, 0.18);
+  color: var(--teal);
 }
 
 /* ── Scrollbar ───────────────────────────────────────────────────────────── */
