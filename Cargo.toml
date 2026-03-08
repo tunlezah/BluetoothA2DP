@@ -52,6 +52,9 @@ futures-util = "0.3"
 # Math for DSP
 libm = "0.2"
 
+# FFT for real-time spectrum analysis
+rustfft = "6"
+
 # File paths / dirs
 dirs = "5"
 

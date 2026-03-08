@@ -1,17 +1,18 @@
 /**
  * SoundSync Web Application
  *
- * Handles real-time Bluetooth management, EQ control, and UI updates.
- * Uses a WebSocket connection to /ws/status for live state updates.
- * REST API calls to /api/* for control actions.
+ * Handles real-time Bluetooth management, spectrum visualiser, and track
+ * info display. Uses a WebSocket connection to /ws/status for live state
+ * updates and REST API calls to /api/* for control actions.
  *
- * No external dependencies — vanilla JS with Web Components pattern.
+ * No external dependencies — vanilla JS only.
  */
 
 'use strict';
 
 const SoundSync = (() => {
-  // ── State ──────────────────────────────────────────────────────────────────
+
+  // ── Application state ──────────────────────────────────────────────────────
 
   const state = {
     ws: null,
@@ -20,25 +21,196 @@ const SoundSync = (() => {
     devices: [],
     status: 'unavailable',
     activeDevice: null,
-    eq: { bands: [], enabled: true },
-    presets: [],
     scanning: false,
     settingsOpen: false,
-    eqDirtyTimer: null,
+    // AVRCP track info
+    currentTrack: null,      // { title, artist, album, duration_ms } | null
+    playbackStatus: 'unknown', // 'playing' | 'paused' | 'stopped' | 'unknown'
+    isStreaming: false,
   };
 
-  // EQ band frequencies matching the backend
-  const EQ_FREQS = [60, 120, 250, 500, 1000, 2000, 4000, 8000, 12000, 16000];
-  const EQ_FREQ_LABELS = ['60Hz', '120Hz', '250Hz', '500Hz', '1kHz', '2kHz', '4kHz', '8kHz', '12kHz', '16kHz'];
+  // ── Spectrum analyser ──────────────────────────────────────────────────────
+
+  const spectrum = (() => {
+    const NUM_BANDS = 64;
+    let canvas = null;
+    let ctx = null;
+    let animId = null;
+
+    // Current band magnitudes (0.0 – 1.0)
+    let bands = new Float32Array(NUM_BANDS);
+    // Peak-hold values
+    let peaks = new Float32Array(NUM_BANDS);
+    // Frames remaining before peak starts decaying
+    let peakHold = new Int32Array(NUM_BANDS);
+
+    // Gentle idle decay when not streaming
+    let idleDecayTimer = null;
+
+    function init() {
+      canvas = document.getElementById('spectrum-canvas');
+      if (!canvas) return;
+      ctx = canvas.getContext('2d');
+      render(); // kick off animation loop
+    }
+
+    function update(newBands) {
+      if (!newBands || !newBands.length) return;
+      for (let i = 0; i < Math.min(newBands.length, NUM_BANDS); i++) {
+        bands[i] = newBands[i];
+      }
+      // Cancel idle decay while receiving live data
+      if (idleDecayTimer) {
+        clearInterval(idleDecayTimer);
+        idleDecayTimer = null;
+      }
+    }
+
+    function startIdleDecay() {
+      // Slowly decay bands to zero when stream stops
+      if (idleDecayTimer) return;
+      idleDecayTimer = setInterval(() => {
+        let anyNonZero = false;
+        for (let i = 0; i < NUM_BANDS; i++) {
+          bands[i] *= 0.85;
+          peaks[i] *= 0.92;
+          if (bands[i] > 0.001) anyNonZero = true;
+        }
+        if (!anyNonZero) {
+          clearInterval(idleDecayTimer);
+          idleDecayTimer = null;
+        }
+      }, 50);
+    }
+
+    function render() {
+      animId = requestAnimationFrame(render);
+      if (!canvas || !ctx) return;
+
+      // Resize canvas to fill its CSS container (HiDPI aware)
+      const wrap = canvas.parentElement;
+      if (!wrap) return;
+      const rect = wrap.getBoundingClientRect();
+      const dpr = Math.min(window.devicePixelRatio || 1, 2); // cap at 2× for perf
+      const cssW = Math.floor(rect.width);
+      const cssH = Math.floor(rect.height);
+      const physW = Math.round(cssW * dpr);
+      const physH = Math.round(cssH * dpr);
+
+      if (canvas.width !== physW || canvas.height !== physH) {
+        canvas.width = physW;
+        canvas.height = physH;
+        canvas.style.width = cssW + 'px';
+        canvas.style.height = cssH + 'px';
+        ctx.scale(dpr, dpr);
+      }
+
+      const W = cssW;
+      const H = cssH;
+
+      // Background
+      ctx.clearRect(0, 0, W, H);
+
+      // --- dB grid lines ---
+      const dbLevels = [0.0, 0.25, 0.5, 0.75, 1.0]; // mapped to -80..-20..0 dB
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+      ctx.lineWidth = 1;
+      dbLevels.forEach(level => {
+        const y = Math.round(H * (1.0 - level));
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(W, y);
+        ctx.stroke();
+      });
+      ctx.restore();
+
+      // --- Frequency bars ---
+      const n = bands.length;
+      const totalGap = n - 1;
+      const barW = Math.max(1, (W - totalGap) / n);
+      const gap = (W - barW * n) / Math.max(1, n - 1);
+
+      for (let i = 0; i < n; i++) {
+        const amp = Math.max(0.0, Math.min(1.0, bands[i]));
+        const barH = amp * H;
+        const x = i * (barW + gap);
+        const y = H - barH;
+
+        // Colour: teal (#1db8c0) → green (#30d158) → orange (#ff8c42) → pink (#d946a8)
+        // Mapped left-to-right across frequency
+        const t = i / (n - 1);
+        let r, g, b;
+        if (t < 0.33) {
+          // teal → green
+          const u = t / 0.33;
+          r = Math.round(29  + u * (48  - 29));
+          g = Math.round(184 + u * (209 - 184));
+          b = Math.round(192 + u * (88  - 192));
+        } else if (t < 0.66) {
+          // green → orange
+          const u = (t - 0.33) / 0.33;
+          r = Math.round(48  + u * (255 - 48));
+          g = Math.round(209 + u * (140 - 209));
+          b = Math.round(88  + u * (66  - 88));
+        } else {
+          // orange → pink
+          const u = (t - 0.66) / 0.34;
+          r = Math.round(255 + u * (217 - 255));
+          g = Math.round(140 + u * (70  - 140));
+          b = Math.round(66  + u * (168 - 66));
+        }
+
+        // Minimum glow for non-zero bands
+        const baseAlpha = 0.15;
+        const alpha = baseAlpha + amp * (1.0 - baseAlpha);
+
+        // Vertical gradient — brighter at top of bar
+        if (barH > 1) {
+          const grad = ctx.createLinearGradient(0, y, 0, H);
+          grad.addColorStop(0, `rgba(${r},${g},${b},${Math.min(1, alpha + 0.25)})`);
+          grad.addColorStop(0.7, `rgba(${r},${g},${b},${alpha})`);
+          grad.addColorStop(1, `rgba(${r},${g},${b},${alpha * 0.4})`);
+          ctx.fillStyle = grad;
+        } else {
+          ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`;
+        }
+        ctx.fillRect(x, y, barW, barH);
+
+        // --- Peak hold ---
+        if (amp >= peaks[i]) {
+          peaks[i] = amp;
+          peakHold[i] = 48; // hold for ~48 frames (≈0.8s at 60fps)
+        } else if (peakHold[i] > 0) {
+          peakHold[i]--;
+        } else {
+          peaks[i] = Math.max(0, peaks[i] - 0.006);
+        }
+
+        if (peaks[i] > 0.015) {
+          const py = H - peaks[i] * H;
+          ctx.fillStyle = `rgba(255,255,255,0.5)`;
+          ctx.fillRect(x, py - 1, barW, 2);
+        }
+      }
+
+      // --- Idle overlay ---
+      const idleEl = document.getElementById('spectrum-idle');
+      if (idleEl) {
+        const hasSignal = bands.some(v => v > 0.015);
+        idleEl.style.display = hasSignal ? 'none' : 'flex';
+      }
+    }
+
+    return { init, update, startIdleDecay };
+  })();
 
   // ── Initialisation ─────────────────────────────────────────────────────────
 
   function init() {
-    buildEqSliders();
+    spectrum.init();
     connectWebSocket();
-    loadPresets();
 
-    // Keyboard shortcut: S = scan
     document.addEventListener('keydown', (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
       if (e.key === 's' || e.key === 'S') toggleScan();
@@ -74,21 +246,18 @@ const SoundSync = (() => {
       }
     };
 
-    state.ws.onerror = () => {
-      // Will trigger onclose
-    };
+    state.ws.onerror = () => { /* triggers onclose */ };
 
     state.ws.onclose = () => {
       updateStatusPill('unavailable', 'Reconnecting…');
-      // Exponential backoff reconnect
       state.wsReconnectTimer = setTimeout(() => {
-        state.wsReconnectDelay = Math.min(state.wsReconnectDelay * 2, 30000);
+        state.wsReconnectDelay = Math.min(state.wsReconnectDelay * 2, 30_000);
         connectWebSocket();
       }, state.wsReconnectDelay);
     };
   }
 
-  // ── Event handling ─────────────────────────────────────────────────────────
+  // ── Server event handler ───────────────────────────────────────────────────
 
   function handleServerEvent(event) {
     switch (event.type) {
@@ -114,10 +283,20 @@ const SoundSync = (() => {
 
       case 'stream_stopped':
         updateStreamStatus(false, event.data.address);
+        spectrum.startIdleDecay();
         break;
 
-      case 'eq_changed':
-        fetchEq();
+      case 'spectrum_data':
+        spectrum.update(event.data.bands);
+        updateSpectrumStatus(true);
+        break;
+
+      case 'track_changed':
+        updateTrackInfo(event.data.track);
+        break;
+
+      case 'playback_status_changed':
+        updatePlaybackStatus(event.data.status);
         break;
 
       case 'error':
@@ -125,13 +304,11 @@ const SoundSync = (() => {
         break;
 
       default:
-        // Unknown event type — ignore
         break;
     }
   }
 
   function applySnapshot(data) {
-    // Apply full state snapshot received on WebSocket connect
     updateBluetoothStatus(data.status);
 
     if (data.devices) {
@@ -139,18 +316,22 @@ const SoundSync = (() => {
       renderDeviceList();
     }
 
-    if (data.eq && data.eq.length) {
-      state.eq.bands = data.eq;
-      updateEqSliders(data.eq);
-    }
-
     if (data.active_device) {
       state.activeDevice = data.active_device;
-      updatePlaybackPanel();
     }
+
+    if (data.track_info !== undefined) {
+      updateTrackInfo(data.track_info);
+    }
+
+    if (data.playback_status) {
+      updatePlaybackStatus(data.playback_status);
+    }
+
+    updatePlaybackPanel();
   }
 
-  // ── API calls ──────────────────────────────────────────────────────────────
+  // ── API helpers ────────────────────────────────────────────────────────────
 
   async function apiFetch(path, options = {}) {
     try {
@@ -177,23 +358,6 @@ const SoundSync = (() => {
     } catch (_) {}
   }
 
-  async function fetchEq() {
-    try {
-      const data = await apiFetch('/api/eq');
-      state.eq = data;
-      updateEqSliders(data.bands);
-      updateEqToggle(data.enabled);
-    } catch (_) {}
-  }
-
-  async function loadPresets() {
-    try {
-      const data = await apiFetch('/api/eq/presets');
-      state.presets = data.presets || [];
-      renderPresetSelect();
-    } catch (_) {}
-  }
-
   // ── Bluetooth control ──────────────────────────────────────────────────────
 
   async function toggleScan() {
@@ -207,7 +371,7 @@ const SoundSync = (() => {
       if (btn) btn.classList.toggle('active', state.scanning);
       showToast(state.scanning ? 'Scanning for devices…' : 'Scan stopped', 'info');
     } catch (_) {
-      state.scanning = !state.scanning; // revert
+      state.scanning = !state.scanning;
     }
   }
 
@@ -241,108 +405,12 @@ const SoundSync = (() => {
     } catch (_) {}
   }
 
-  // ── EQ control ─────────────────────────────────────────────────────────────
-
-  function onBandChanged(index, value) {
-    // Update the gain label immediately for responsiveness
-    const band = document.querySelector(`.eq-band[data-index="${index}"]`);
-    if (band) {
-      const label = band.querySelector('.eq-gain-label');
-      if (label) {
-        const db = parseFloat(value).toFixed(1);
-        label.textContent = db > 0 ? `+${db}` : `${db}`;
-      }
-    }
-
-    // Update local state
-    if (state.eq.bands[index]) {
-      state.eq.bands[index].gain_db = parseFloat(value);
-    }
-
-    // Debounce API call — send 300ms after last change
-    clearTimeout(state.eqDirtyTimer);
-    state.eqDirtyTimer = setTimeout(() => pushEqUpdate(), 300);
-  }
-
-  async function pushEqUpdate() {
-    const bands = state.eq.bands.map(b => ({ freq: b.freq, gain_db: b.gain_db }));
-    try {
-      await apiFetch('/api/eq', {
-        method: 'POST',
-        body: JSON.stringify({ bands }),
-      });
-    } catch (_) {}
-  }
-
-  async function toggleEq() {
-    state.eq.enabled = !state.eq.enabled;
-    updateEqToggle(state.eq.enabled);
-    try {
-      const bands = state.eq.bands.map(b => ({ freq: b.freq, gain_db: b.gain_db }));
-      await apiFetch('/api/eq', {
-        method: 'POST',
-        body: JSON.stringify({ bands, enabled: state.eq.enabled }),
-      });
-    } catch (_) {
-      state.eq.enabled = !state.eq.enabled;
-      updateEqToggle(state.eq.enabled);
-    }
-  }
-
-  async function applyPreset(name) {
-    if (!name) return;
-    try {
-      const data = await apiFetch('/api/eq/preset', {
-        method: 'POST',
-        body: JSON.stringify({ name }),
-      });
-      state.eq = data;
-      updateEqSliders(data.bands);
-      updateEqToggle(data.enabled);
-      showToast(`Preset "${name}" applied`, 'success');
-    } catch (_) {
-      document.getElementById('eq-preset-select').value = '';
-    }
-  }
-
-  async function savePreset() {
-    const name = prompt('Preset name:');
-    if (!name || !name.trim()) return;
-    try {
-      await apiFetch('/api/eq/preset/save', {
-        method: 'POST',
-        body: JSON.stringify({ name: name.trim() }),
-      });
-      await loadPresets();
-      showToast(`Preset "${name.trim()}" saved`, 'success');
-    } catch (_) {}
-  }
-
-  async function resetEq() {
-    const flatBands = EQ_FREQS.map(freq => ({ freq, gain_db: 0.0 }));
-    try {
-      await apiFetch('/api/eq', {
-        method: 'POST',
-        body: JSON.stringify({ bands: flatBands }),
-      });
-      state.eq.bands = flatBands;
-      updateEqSliders(flatBands);
-      document.getElementById('eq-preset-select').value = '';
-      showToast('EQ reset to flat', 'info');
-    } catch (_) {}
-  }
+  // ── Volume ─────────────────────────────────────────────────────────────────
 
   function setVolume(value) {
-    // Volume control updates are informational — actual volume control
-    // goes through PipeWire/ALSA which is handled at system level
-    // This slider provides visual feedback for the user
-    const icon = document.querySelector('.volume-icon');
-    if (value < 30) {
-      document.querySelectorAll('.volume-icon')[0].textContent = '🔇';
-    } else if (value < 60) {
-      document.querySelectorAll('.volume-icon')[0].textContent = '🔈';
-    } else {
-      document.querySelectorAll('.volume-icon')[0].textContent = '🔉';
+    const icons = document.querySelectorAll('.volume-icon');
+    if (icons[0]) {
+      icons[0].textContent = value < 10 ? '🔇' : value < 50 ? '🔈' : '🔉';
     }
   }
 
@@ -358,7 +426,6 @@ const SoundSync = (() => {
     if (chevron) chevron.classList.toggle('open', state.settingsOpen);
     if (toggle) toggle.setAttribute('aria-expanded', state.settingsOpen);
 
-    // Update the app grid row height for the drawer
     const app = document.getElementById('app');
     if (app) {
       app.style.gridTemplateRows = state.settingsOpen
@@ -367,7 +434,6 @@ const SoundSync = (() => {
     }
 
     if (state.settingsOpen) {
-      // Populate settings fields
       const nameInput = document.getElementById('settings-name');
       if (nameInput && !nameInput.value) {
         const titleEl = document.querySelector('.app-name');
@@ -386,7 +452,6 @@ const SoundSync = (() => {
       const data = await apiFetch('/api/status');
       const uptimeEl = document.getElementById('settings-uptime');
       if (uptimeEl) uptimeEl.textContent = formatUptime(data.uptime_seconds);
-
       const countEl = document.getElementById('settings-device-count');
       if (countEl) countEl.textContent = data.device_count;
     } catch (_) {}
@@ -397,7 +462,6 @@ const SoundSync = (() => {
     if (!input) return;
     const name = input.value.trim();
     if (!name) { showToast('Enter a name first', 'error'); return; }
-
     try {
       await apiFetch('/api/bluetooth/name', {
         method: 'POST',
@@ -411,131 +475,10 @@ const SoundSync = (() => {
 
   async function refresh() {
     await fetchDevices();
-    await fetchEq();
     showToast('Status refreshed', 'info');
   }
 
-  // ── UI rendering ───────────────────────────────────────────────────────────
-
-  function buildEqSliders() {
-    const container = document.getElementById('eq-sliders');
-    if (!container) return;
-
-    container.innerHTML = '';
-
-    EQ_FREQS.forEach((freq, i) => {
-      const band = document.createElement('div');
-      band.className = 'eq-band';
-      band.dataset.index = i;
-      band.setAttribute('role', 'group');
-      band.setAttribute('aria-label', `${EQ_FREQ_LABELS[i]} band`);
-
-      band.innerHTML = `
-        <span class="eq-gain-label" aria-live="polite">0.0</span>
-        <div class="eq-slider-wrap">
-          <div class="eq-zero-line" aria-hidden="true"></div>
-          <input type="range"
-                 class="eq-slider"
-                 min="-12" max="12" step="0.5" value="0"
-                 aria-label="${EQ_FREQ_LABELS[i]} gain"
-                 aria-valuemin="-12" aria-valuemax="12" aria-valuenow="0"
-                 data-band="${i}"
-                 oninput="SoundSync.onBandChanged(${i}, this.value)"
-                 ondblclick="SoundSync.resetBand(${i})" />
-        </div>
-        <span class="eq-freq-label">${EQ_FREQ_LABELS[i]}</span>
-      `;
-
-      container.appendChild(band);
-    });
-
-    // Initialise with default flat bands
-    state.eq.bands = EQ_FREQS.map(freq => ({ freq, gain_db: 0.0 }));
-  }
-
-  function updateEqSliders(bands) {
-    if (!bands || bands.length !== 10) return;
-    state.eq.bands = bands;
-
-    bands.forEach((band, i) => {
-      const slider = document.querySelector(`.eq-slider[data-band="${i}"]`);
-      const label = document.querySelector(`.eq-band[data-index="${i}"] .eq-gain-label`);
-
-      if (slider) {
-        slider.value = band.gain_db;
-        slider.setAttribute('aria-valuenow', band.gain_db);
-      }
-      if (label) {
-        const db = parseFloat(band.gain_db).toFixed(1);
-        label.textContent = db > 0 ? `+${db}` : `${db}`;
-        label.style.color = band.gain_db > 0 ? 'var(--teal)' : band.gain_db < 0 ? 'var(--orange)' : 'var(--text-muted)';
-      }
-    });
-  }
-
-  function resetBand(index) {
-    const slider = document.querySelector(`.eq-slider[data-band="${index}"]`);
-    if (slider) {
-      slider.value = 0;
-      onBandChanged(index, 0);
-    }
-  }
-
-  function updateEqToggle(enabled) {
-    state.eq.enabled = enabled;
-    const btn = document.getElementById('eq-toggle');
-    if (btn) btn.classList.toggle('active', enabled);
-
-    // Dim the sliders when EQ is off
-    const sliders = document.getElementById('eq-sliders');
-    if (sliders) sliders.style.opacity = enabled ? '1' : '0.4';
-  }
-
-  function renderPresetSelect() {
-    const select = document.getElementById('eq-preset-select');
-    if (!select) return;
-
-    const current = select.value;
-    select.innerHTML = '<option value="">— Preset —</option>';
-
-    // Group: built-in presets
-    const builtins = ['flat', 'bass_boost', 'treble_boost', 'vinyl_warm', 'speech', 'rock', 'classical', 'electronic'];
-    const builtin = state.presets.filter(p => builtins.includes(p));
-    const custom = state.presets.filter(p => !builtins.includes(p));
-
-    if (builtin.length) {
-      const group = document.createElement('optgroup');
-      group.label = 'Built-in';
-      builtin.forEach(name => {
-        const opt = document.createElement('option');
-        opt.value = name;
-        opt.textContent = formatPresetName(name);
-        group.appendChild(opt);
-      });
-      select.appendChild(group);
-    }
-
-    if (custom.length) {
-      const group = document.createElement('optgroup');
-      group.label = 'Saved';
-      custom.forEach(name => {
-        const opt = document.createElement('option');
-        opt.value = name;
-        opt.textContent = name;
-        group.appendChild(opt);
-      });
-      select.appendChild(group);
-    }
-
-    // Restore selection if still valid
-    if (state.presets.includes(current)) {
-      select.value = current;
-    }
-  }
-
-  function formatPresetName(name) {
-    return name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-  }
+  // ── UI rendering: device list ──────────────────────────────────────────────
 
   function renderDeviceList() {
     const list = document.getElementById('device-list');
@@ -546,25 +489,21 @@ const SoundSync = (() => {
 
     if (!devices.length) {
       if (noDevices) noDevices.style.display = 'flex';
-      // Remove existing device cards
       list.querySelectorAll('.device-card').forEach(el => el.remove());
       return;
     }
 
     if (noDevices) noDevices.style.display = 'none';
 
-    // Reconcile existing cards with current device list
     const existingCards = {};
     list.querySelectorAll('.device-card').forEach(el => {
       existingCards[el.dataset.address] = el;
     });
 
-    // Add or update cards
     const seen = new Set();
     devices.forEach(device => {
       seen.add(device.address);
       let card = existingCards[device.address];
-
       if (!card) {
         card = document.createElement('div');
         card.className = 'device-card';
@@ -572,11 +511,9 @@ const SoundSync = (() => {
         card.setAttribute('role', 'listitem');
         list.appendChild(card);
       }
-
       updateDeviceCard(card, device);
     });
 
-    // Remove cards for devices no longer present
     Object.entries(existingCards).forEach(([addr, el]) => {
       if (!seen.has(addr)) el.remove();
     });
@@ -616,7 +553,7 @@ const SoundSync = (() => {
     return ['connected', 'profile_negotiated', 'pipewire_source_ready', 'audio_active'].includes(stateStr);
   }
 
-  function formatDeviceState(state) {
+  function formatDeviceState(s) {
     const labels = {
       disconnected: 'Disconnected',
       discovered: 'Nearby',
@@ -627,7 +564,7 @@ const SoundSync = (() => {
       pipewire_source_ready: 'Audio Ready',
       audio_active: 'Streaming',
     };
-    return labels[state] || state;
+    return labels[s] || s;
   }
 
   function updateDeviceState(data) {
@@ -642,49 +579,108 @@ const SoundSync = (() => {
     updatePlaybackPanel();
   }
 
+  // ── UI rendering: spectrum status badge ───────────────────────────────────
+
+  function updateSpectrumStatus(active) {
+    const badge = document.getElementById('spectrum-status');
+    const text = document.getElementById('spectrum-status-text');
+    if (badge) badge.setAttribute('data-active', active ? 'true' : 'false');
+    if (text) text.textContent = active ? 'Live' : 'No Signal';
+  }
+
+  // ── UI rendering: playback panel ──────────────────────────────────────────
+
   function updatePlaybackPanel() {
     const active = state.devices.find(d => isDeviceConnected(d.state));
     const streaming = state.devices.find(d => d.state === 'audio_active');
 
     const deviceEl = document.getElementById('playback-device');
-    const stateEl = document.getElementById('playback-state');
     const streamEl = document.getElementById('stat-stream');
-    const waveform = document.getElementById('waveform');
 
     if (streaming) {
       if (deviceEl) deviceEl.textContent = streaming.name;
-      if (stateEl) { stateEl.textContent = 'Audio Active'; stateEl.style.color = 'var(--green)'; }
       if (streamEl) { streamEl.textContent = 'Active'; streamEl.className = 'stat-value active'; }
-      if (waveform) waveform.classList.add('active');
       state.activeDevice = streaming.address;
+      state.isStreaming = true;
     } else if (active) {
       if (deviceEl) deviceEl.textContent = active.name;
-      if (stateEl) { stateEl.textContent = formatDeviceState(active.state); stateEl.style.color = 'var(--teal)'; }
       if (streamEl) { streamEl.textContent = 'Connected'; streamEl.className = 'stat-value'; }
-      if (waveform) waveform.classList.remove('active');
+      state.isStreaming = false;
     } else {
       if (deviceEl) deviceEl.textContent = '—';
-      if (stateEl) { stateEl.textContent = 'No active stream'; stateEl.style.color = 'var(--text-muted)'; }
       if (streamEl) { streamEl.textContent = 'Idle'; streamEl.className = 'stat-value inactive'; }
-      if (waveform) waveform.classList.remove('active');
+      state.isStreaming = false;
+      updateSpectrumStatus(false);
+    }
+
+    // If no AVRCP track info available, show device name as fallback
+    if (!state.currentTrack) {
+      const titleEl = document.getElementById('track-title');
+      const artistEl = document.getElementById('track-artist-album');
+      if (titleEl) titleEl.textContent = streaming ? streaming.name : (active ? active.name : '—');
+      if (artistEl) artistEl.textContent = streaming ? 'Playing through system speakers' : '—';
+    }
+  }
+
+  function updateTrackInfo(track) {
+    state.currentTrack = track;
+
+    const titleEl = document.getElementById('track-title');
+    const artistEl = document.getElementById('track-artist-album');
+
+    if (track) {
+      if (titleEl) titleEl.textContent = track.title || '(Unknown Track)';
+      const parts = [track.artist, track.album].filter(Boolean);
+      if (artistEl) artistEl.textContent = parts.length ? parts.join(' — ') : '—';
+    } else {
+      // Fall back to device name
+      const streaming = state.devices.find(d => d.state === 'audio_active');
+      const active = state.devices.find(d => isDeviceConnected(d.state));
+      if (titleEl) titleEl.textContent = streaming ? streaming.name : (active ? active.name : '—');
+      if (artistEl) artistEl.textContent = streaming ? 'Playing through system speakers' : '—';
+    }
+  }
+
+  function updatePlaybackStatus(status) {
+    state.playbackStatus = status;
+
+    const badge = document.getElementById('playback-badge');
+    const icon = document.querySelector('#playback-badge .pb-icon');
+    const text = document.getElementById('pb-status-text');
+
+    if (badge) badge.setAttribute('data-status', status);
+
+    const statusMap = {
+      playing: { icon: '▶', label: 'Playing', cls: 'playing' },
+      paused:  { icon: '❙❙', label: 'Paused',  cls: 'paused'  },
+      stopped: { icon: '■', label: 'Stopped', cls: 'stopped' },
+      unknown: { icon: '■', label: 'No stream', cls: 'unknown' },
+    };
+    const info = statusMap[status] || statusMap.unknown;
+    if (icon) icon.textContent = info.icon;
+    if (text) text.textContent = info.label;
+    if (badge) {
+      badge.className = `playback-badge status-${info.cls}`;
+      badge.setAttribute('data-status', status);
     }
   }
 
   function updateStreamStatus(active, address) {
     const streamEl = document.getElementById('stat-stream');
-    const waveform = document.getElementById('waveform');
 
     if (active) {
       if (streamEl) { streamEl.textContent = 'Active'; streamEl.className = 'stat-value active'; }
-      if (waveform) waveform.classList.add('active');
       state.activeDevice = address;
+      state.isStreaming = true;
 
-      // Update device state
-      const device = state.devices.find(d => d.address === address || address === 'pipewire_source');
+      const device = state.devices.find(d =>
+        d.address === address || address === 'pipewire_detected'
+      );
       if (device) device.state = 'audio_active';
     } else {
       if (streamEl) { streamEl.textContent = 'Idle'; streamEl.className = 'stat-value inactive'; }
-      if (waveform) waveform.classList.remove('active');
+      state.isStreaming = false;
+      updateSpectrumStatus(false);
     }
 
     renderDeviceList();
@@ -695,7 +691,6 @@ const SoundSync = (() => {
     state.status = status;
     state.scanning = status === 'scanning';
 
-    // Map backend status to display
     let display, pillStatus;
     if (status === 'scanning') {
       display = 'Scanning…';
@@ -703,7 +698,7 @@ const SoundSync = (() => {
     } else if (status === 'ready') {
       display = 'Ready';
       pillStatus = 'ready';
-    } else if (status.startsWith('error')) {
+    } else if (status && status.startsWith('error')) {
       display = 'Error';
       pillStatus = 'unavailable';
     } else {
@@ -711,23 +706,17 @@ const SoundSync = (() => {
       pillStatus = 'unavailable';
     }
 
-    // Check if any device is streaming
     const hasStream = state.devices.some(d => d.state === 'audio_active');
-    if (hasStream) {
-      display = 'Streaming';
-      pillStatus = 'streaming';
-    } else if (state.devices.some(d => isDeviceConnected(d.state))) {
-      display = 'Connected';
-      pillStatus = 'connected';
+    if (hasStream) { display = 'Streaming'; pillStatus = 'streaming'; }
+    else if (state.devices.some(d => isDeviceConnected(d.state))) {
+      display = 'Connected'; pillStatus = 'connected';
     }
 
     updateStatusPill(pillStatus, display);
 
-    // Update scan button state
     const scanBtn = document.getElementById('btn-scan');
     if (scanBtn) scanBtn.classList.toggle('active', state.scanning);
 
-    // Update PipeWire status indicator
     const pwEl = document.getElementById('stat-pw');
     if (pwEl) {
       pwEl.textContent = status !== 'unavailable' ? 'Active' : '—';
@@ -752,10 +741,8 @@ const SoundSync = (() => {
     toast.className = `toast ${type}`;
     toast.textContent = message;
     toast.setAttribute('role', 'alert');
-
     container.appendChild(toast);
 
-    // Auto-remove after 3 seconds
     setTimeout(() => {
       toast.style.opacity = '0';
       toast.style.transform = 'translateX(20px)';
@@ -764,7 +751,7 @@ const SoundSync = (() => {
     }, 3000);
   }
 
-  // ── Utility functions ──────────────────────────────────────────────────────
+  // ── Utilities ──────────────────────────────────────────────────────────────
 
   function escapeHtml(str) {
     if (typeof str !== 'string') return '';
@@ -784,31 +771,26 @@ const SoundSync = (() => {
     return `${h}h ${m}m`;
   }
 
-  // ── Public API ─────────────────────────────────────────────────────────────
+  // ── Bootstrap ──────────────────────────────────────────────────────────────
 
-  // Initialise when DOM is ready
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
   } else {
     init();
   }
 
+  // ── Public API (called from HTML inline handlers) ──────────────────────────
+
   return {
     toggleScan,
     connectDevice,
     disconnectDevice,
     removeDevice,
-    onBandChanged,
-    resetBand,
-    toggleEq,
-    applyPreset,
-    savePreset,
-    resetEq,
     setVolume,
     toggleSettings,
     applyName,
     refresh,
-    // Expose state for debugging
     get state() { return state; },
   };
+
 })();

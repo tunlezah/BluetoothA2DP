@@ -1,6 +1,7 @@
 #[allow(dead_code)]
 mod adapter;
 mod agent;
+pub mod avrcp;
 pub mod device;
 mod events;
 pub mod manager;
