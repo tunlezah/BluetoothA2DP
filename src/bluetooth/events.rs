@@ -1,8 +1,7 @@
 //! Bluetooth event types emitted by the BluetoothManager.
 
-use std::collections::HashMap;
-
 /// Events produced by the Bluetooth subsystem.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum BluetoothEvent {
     /// Adapter became available and powered

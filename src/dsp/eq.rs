@@ -1,4 +1,5 @@
 //! 10-band graphic equaliser for SoundSync.
+#![allow(dead_code)]
 //!
 //! Standard audio frequencies from the design spec:
 //! 60Hz, 120Hz, 250Hz, 500Hz, 1kHz, 2kHz, 4kHz, 8kHz, 12kHz, 16kHz
@@ -18,8 +19,8 @@ pub const EQ_FREQUENCIES: [f64; 10] = [
     60.0, 120.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 12000.0, 16000.0,
 ];
 
-/// Q factor for graphic EQ bands (constant-Q, √2 ≈ 1.41).
-pub const EQ_Q_FACTOR: f64 = 1.4142135623730951;
+/// Q factor for graphic EQ bands (constant-Q, √2).
+pub const EQ_Q_FACTOR: f64 = std::f64::consts::SQRT_2;
 
 /// Gain range limits in dB.
 pub const EQ_GAIN_MIN: f32 = -12.0;
@@ -243,7 +244,12 @@ mod tests {
         let original = buffer.clone();
         eq.process_interleaved(&mut buffer);
         for (a, b) in original.iter().zip(buffer.iter()) {
-            assert!((a - b).abs() < 0.01, "Flat EQ should pass through: {} vs {}", a, b);
+            assert!(
+                (a - b).abs() < 0.01,
+                "Flat EQ should pass through: {} vs {}",
+                a,
+                b
+            );
         }
     }
 

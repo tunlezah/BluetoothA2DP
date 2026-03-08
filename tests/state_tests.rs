@@ -85,7 +85,10 @@ async fn app_state_remove_device() {
 
     let state = handle.state.read().await;
     assert!(state.devices.is_empty());
-    assert!(state.active_device.is_none(), "active_device should be cleared when device is removed");
+    assert!(
+        state.active_device.is_none(),
+        "active_device should be cleared when device is removed"
+    );
 }
 
 #[tokio::test]
@@ -117,7 +120,10 @@ async fn app_state_device_list_sorted_connected_first() {
 
     assert_eq!(list.len(), 3);
     // Connected device (Phone B) should be first
-    assert_eq!(list[0].address, "AA:BB:CC:DD:EE:02", "Connected device should sort first");
+    assert_eq!(
+        list[0].address, "AA:BB:CC:DD:EE:02",
+        "Connected device should sort first"
+    );
 }
 
 #[tokio::test]
@@ -153,7 +159,12 @@ async fn app_state_snapshot_includes_all_fields() {
     let snapshot = state.snapshot_event();
 
     match snapshot {
-        SystemEvent::StateSnapshot { status, devices, eq, .. } => {
+        SystemEvent::StateSnapshot {
+            status,
+            devices,
+            eq,
+            ..
+        } => {
             assert_eq!(status, "ready");
             assert_eq!(devices.len(), 1);
             assert_eq!(eq.len(), 10, "Snapshot must include 10 EQ bands");

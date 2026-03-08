@@ -23,13 +23,21 @@ fn biquad_identity_passthrough() {
 fn biquad_peaking_boost_increases_level() {
     let coeffs = BiquadCoeffs::peaking_eq(1000.0, 6.0, 1.41, 48000.0);
     // b0 > 1 for a boost filter
-    assert!(coeffs.b0 > 1.0, "6dB boost should increase b0: got {}", coeffs.b0);
+    assert!(
+        coeffs.b0 > 1.0,
+        "6dB boost should increase b0: got {}",
+        coeffs.b0
+    );
 }
 
 #[test]
 fn biquad_peaking_cut_decreases_level() {
     let coeffs = BiquadCoeffs::peaking_eq(1000.0, -6.0, 1.41, 48000.0);
-    assert!(coeffs.b0 < 1.0, "6dB cut should decrease b0: got {}", coeffs.b0);
+    assert!(
+        coeffs.b0 < 1.0,
+        "6dB cut should decrease b0: got {}",
+        coeffs.b0
+    );
 }
 
 #[test]
@@ -66,7 +74,10 @@ fn biquad_state_reset_clears_delay() {
     let mut fresh = BiquadState::new();
     let out1 = state.process(0.1, &coeffs);
     let out2 = fresh.process(0.1, &coeffs);
-    assert!((out1 - out2).abs() < 1e-6, "Reset state should match fresh state");
+    assert!(
+        (out1 - out2).abs() < 1e-6,
+        "Reset state should match fresh state"
+    );
 }
 
 // ── Equaliser tests ──────────────────────────────────────────────────────────
@@ -146,7 +157,7 @@ fn equaliser_planar_processing() {
     let mut left = vec![0.5f32; 64];
     let mut right = vec![-0.3f32; 64];
     let orig_l = left.clone();
-    let orig_r = right.clone();
+    let _orig_r = right.clone();
 
     // Flat EQ should preserve signal
     eq.process_planar(&mut left, &mut right);
@@ -161,7 +172,7 @@ fn equaliser_band_count_validation() {
     // set_bands with wrong count should be ignored (no panic)
     let bad_bands: Vec<EqBand> = (0..5).map(|i| EqBand::new(1000.0, i as f32)).collect();
     eq.set_bands(&bad_bands); // should not panic, just warn
-    // Bands remain at default
+                              // Bands remain at default
     assert_eq!(eq.get_bands().len(), 10);
 }
 
@@ -171,7 +182,15 @@ fn equaliser_band_count_validation() {
 fn presets_builtins_present() {
     let manager = PresetManager::new();
     let list = manager.list();
-    let required = ["flat", "bass_boost", "vinyl_warm", "speech", "rock", "classical", "electronic"];
+    let required = [
+        "flat",
+        "bass_boost",
+        "vinyl_warm",
+        "speech",
+        "rock",
+        "classical",
+        "electronic",
+    ];
     for name in &required {
         assert!(list.contains(&name.to_string()), "Missing preset: {}", name);
     }
@@ -183,7 +202,10 @@ fn preset_flat_all_zero() {
     let flat = manager.get("flat").expect("flat preset must exist");
     assert_eq!(flat.bands.len(), 10);
     for band in &flat.bands {
-        assert_eq!(band.gain_db, 0.0, "Flat preset should have 0dB gain on all bands");
+        assert_eq!(
+            band.gain_db, 0.0,
+            "Flat preset should have 0dB gain on all bands"
+        );
     }
 }
 
@@ -192,8 +214,14 @@ fn preset_bass_boost_has_low_freq_boost() {
     let manager = PresetManager::new();
     let preset = manager.get("bass_boost").expect("bass_boost must exist");
     // 60Hz and 120Hz should be boosted
-    assert!(preset.bands[0].gain_db > 0.0, "Bass boost should boost 60Hz");
-    assert!(preset.bands[1].gain_db > 0.0, "Bass boost should boost 120Hz");
+    assert!(
+        preset.bands[0].gain_db > 0.0,
+        "Bass boost should boost 60Hz"
+    );
+    assert!(
+        preset.bands[1].gain_db > 0.0,
+        "Bass boost should boost 120Hz"
+    );
 }
 
 #[test]
@@ -205,7 +233,9 @@ fn preset_bands_within_limits() {
             assert!(
                 band.gain_db >= EQ_GAIN_MIN && band.gain_db <= EQ_GAIN_MAX,
                 "Preset '{}' band {} out of range: {}",
-                name, band.freq, band.gain_db
+                name,
+                band.freq,
+                band.gain_db
             );
         }
     }
@@ -215,7 +245,9 @@ fn preset_bands_within_limits() {
 fn preset_correct_frequencies() {
     let manager = PresetManager::new();
     let flat = manager.get("flat").unwrap();
-    let expected_freqs = [60.0, 120.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 12000.0, 16000.0];
+    let expected_freqs = [
+        60.0, 120.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 12000.0, 16000.0,
+    ];
     for (i, (&expected, band)) in expected_freqs.iter().zip(flat.bands.iter()).enumerate() {
         assert_eq!(band.freq, expected, "Band {} frequency mismatch", i);
     }
@@ -224,6 +256,12 @@ fn preset_correct_frequencies() {
 #[test]
 fn cannot_delete_builtin_preset() {
     let mut manager = PresetManager::new();
-    assert!(!manager.delete_preset("flat"), "Should not be able to delete flat preset");
-    assert!(manager.get("flat").is_some(), "Flat preset must still exist");
+    assert!(
+        !manager.delete_preset("flat"),
+        "Should not be able to delete flat preset"
+    );
+    assert!(
+        manager.get("flat").is_some(),
+        "Flat preset must still exist"
+    );
 }

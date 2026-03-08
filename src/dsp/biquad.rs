@@ -1,4 +1,5 @@
 //! Biquad IIR digital filter implementation.
+#![allow(dead_code)]
 //!
 //! Implements peaking EQ biquad filters using the Audio EQ Cookbook
 //! formulas by Robert Bristow-Johnson.
@@ -8,7 +9,7 @@
 //!
 //! All coefficients are pre-divided by a0 for efficiency.
 
-use libm::{cos, sin, sqrt};
+use libm::{cos, sin};
 use std::f64::consts::PI;
 
 /// Biquad filter coefficients.
@@ -174,8 +175,14 @@ mod tests {
         for i in 0..100 {
             let sample = (i as f32) * 0.01;
             let (l, r) = filter.process(sample, sample);
-            assert!((l - sample).abs() < 1e-6, "Identity filter should pass through");
-            assert!((r - sample).abs() < 1e-6, "Identity filter should pass through");
+            assert!(
+                (l - sample).abs() < 1e-6,
+                "Identity filter should pass through"
+            );
+            assert!(
+                (r - sample).abs() < 1e-6,
+                "Identity filter should pass through"
+            );
         }
     }
 

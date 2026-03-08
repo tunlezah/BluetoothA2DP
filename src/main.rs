@@ -63,7 +63,10 @@ async fn main() -> anyhow::Result<()> {
     logging::init();
 
     tracing::info!("╔══════════════════════════════════════╗");
-    tracing::info!("║     SoundSync v{}              ║", env!("CARGO_PKG_VERSION"));
+    tracing::info!(
+        "║     SoundSync v{}              ║",
+        env!("CARGO_PKG_VERSION")
+    );
     tracing::info!("║  Bluetooth A2DP Sink + DSP + Web UI  ║");
     tracing::info!("╚══════════════════════════════════════╝");
 
@@ -124,12 +127,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Build the web router
-    let router = build_router(
-        state.clone(),
-        bt_cmd_tx,
-        equaliser.clone(),
-        presets.clone(),
-    );
+    let router = build_router(state.clone(), bt_cmd_tx, equaliser.clone(), presets.clone());
 
     // Start Bluetooth manager in an async task
     tokio::spawn(async move {

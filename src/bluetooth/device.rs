@@ -8,56 +8,53 @@ pub const A2DP_SINK_UUID: &str = "0000110b-0000-1000-8000-00805f9b34fb";
 pub const A2DP_SOURCE_UUID: &str = "0000110a-0000-1000-8000-00805f9b34fb";
 
 /// Proxy for the `org.bluez.Device1` D-Bus interface.
-#[proxy(
-    interface = "org.bluez.Device1",
-    default_service = "org.bluez"
-)]
+#[proxy(interface = "org.bluez.Device1", default_service = "org.bluez")]
 pub trait Device1 {
     /// Initiate connection to the device.
-    async fn connect(&self) -> zbus::Result<()>;
+    fn connect(&self) -> zbus::Result<()>;
     /// Disconnect from the device.
-    async fn disconnect(&self) -> zbus::Result<()>;
+    fn disconnect(&self) -> zbus::Result<()>;
     /// Connect a specific profile (UUID).
-    async fn connect_profile(&self, uuid: &str) -> zbus::Result<()>;
+    fn connect_profile(&self, uuid: &str) -> zbus::Result<()>;
     /// Disconnect a specific profile (UUID).
-    async fn disconnect_profile(&self, uuid: &str) -> zbus::Result<()>;
+    fn disconnect_profile(&self, uuid: &str) -> zbus::Result<()>;
     /// Initiate pairing with the device.
-    async fn pair(&self) -> zbus::Result<()>;
+    fn pair(&self) -> zbus::Result<()>;
     /// Cancel an in-progress pairing.
-    async fn cancel_pairing(&self) -> zbus::Result<()>;
+    fn cancel_pairing(&self) -> zbus::Result<()>;
 
     /// Bluetooth MAC address.
     #[zbus(property)]
-    async fn address(&self) -> zbus::Result<String>;
+    fn address(&self) -> zbus::Result<String>;
     /// Human-readable device name.
     #[zbus(property)]
-    async fn name(&self) -> zbus::Result<String>;
+    fn name(&self) -> zbus::Result<String>;
     /// Alias (user-set name or same as Name).
     #[zbus(property)]
-    async fn alias(&self) -> zbus::Result<String>;
+    fn alias(&self) -> zbus::Result<String>;
     /// Whether the device is currently connected.
     #[zbus(property)]
-    async fn connected(&self) -> zbus::Result<bool>;
+    fn connected(&self) -> zbus::Result<bool>;
     /// Whether the device has been paired.
     #[zbus(property)]
-    async fn paired(&self) -> zbus::Result<bool>;
+    fn paired(&self) -> zbus::Result<bool>;
     /// Whether the device is trusted.
     #[zbus(property)]
-    async fn trusted(&self) -> zbus::Result<bool>;
+    fn trusted(&self) -> zbus::Result<bool>;
     #[zbus(property)]
-    async fn set_trusted(&self, value: bool) -> zbus::Result<()>;
+    fn set_trusted(&self, value: bool) -> zbus::Result<()>;
     /// List of service UUIDs supported by the device.
     #[zbus(property)]
-    async fn uuids(&self) -> zbus::Result<Vec<String>>;
+    fn uuids(&self) -> zbus::Result<Vec<String>>;
     /// RSSI signal strength in dBm.
     #[zbus(property)]
-    async fn rssi(&self) -> zbus::Result<i16>;
+    fn rssi(&self) -> zbus::Result<i16>;
     /// Bluetooth device class.
     #[zbus(property)]
-    async fn class(&self) -> zbus::Result<u32>;
+    fn class(&self) -> zbus::Result<u32>;
     /// Icon string for the device type.
     #[zbus(property)]
-    async fn icon(&self) -> zbus::Result<String>;
+    fn icon(&self) -> zbus::Result<String>;
 }
 
 /// Check if a device's UUID list includes A2DP support.
@@ -71,13 +68,9 @@ pub fn has_a2dp(uuids: &[String]) -> bool {
 ///
 /// BlueZ paths follow the pattern: `/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF`
 pub fn address_from_path(path: &str) -> Option<String> {
-    path.split('/').last().and_then(|last| {
-        if last.starts_with("dev_") {
-            Some(last[4..].replace('_', ":"))
-        } else {
-            None
-        }
-    })
+    path.split('/')
+        .next_back()
+        .and_then(|last| last.strip_prefix("dev_").map(|s| s.replace('_', ":")))
 }
 
 /// Build a BlueZ device object path from an adapter path and MAC address.
@@ -93,7 +86,10 @@ mod tests {
     #[test]
     fn address_from_path_extracts_mac() {
         let path = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF";
-        assert_eq!(address_from_path(path), Some("AA:BB:CC:DD:EE:FF".to_string()));
+        assert_eq!(
+            address_from_path(path),
+            Some("AA:BB:CC:DD:EE:FF".to_string())
+        );
     }
 
     #[test]

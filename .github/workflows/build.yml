@@ -70,7 +70,7 @@ jobs:
 
       # Run unit tests (lib crate only, no system D-Bus/PipeWire needed)
       - name: Run unit tests
-        run: cargo test --lib -- --test-thread=1
+        run: cargo test --lib -- --test-threads=1
 
       # Verify binary exists and can print version
       - name: Verify binary
@@ -102,7 +102,6 @@ jobs:
     name: Build Release Artifact
     runs-on: ubuntu-24.04
     needs: build
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
 
     steps:
       - name: Checkout repository

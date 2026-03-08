@@ -6,14 +6,11 @@
 //!
 //! Capability: "NoInputNoOutput" — accepts all pairing without PIN entry.
 
-use std::sync::{Arc, Mutex};
-
-use zbus::{interface, Connection, ObjectServer};
+use zbus::{interface, Connection};
 
 /// Whether the agent should accept pairing requests.
 /// Controlled by the scan/pairing window.
-static PAIRING_ALLOWED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static PAIRING_ALLOWED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Allow or disallow pairing via the auto-accept agent.
 pub fn set_pairing_allowed(allowed: bool) {
@@ -35,7 +32,10 @@ pub struct SoundSyncAgent;
 impl SoundSyncAgent {
     /// Called when a device needs a PIN code.
     /// We return "0000" as a default — not used for A2DP connections.
-    async fn request_pin_code(&self, device: zbus::zvariant::ObjectPath<'_>) -> zbus::fdo::Result<String> {
+    async fn request_pin_code(
+        &self,
+        device: zbus::zvariant::ObjectPath<'_>,
+    ) -> zbus::fdo::Result<String> {
         tracing::info!(device = %device, "Agent: RequestPinCode");
         if !is_pairing_allowed() {
             return Err(zbus::fdo::Error::Failed("Pairing not allowed".into()));

@@ -1,4 +1,5 @@
 //! Application state management for SoundSync.
+#![allow(dead_code)]
 //!
 //! Provides a shared, thread-safe state container and an event bus
 //! for broadcasting state changes to the WebSocket layer.
@@ -9,7 +10,7 @@ use std::time::Instant;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{broadcast, RwLock};
 
 use crate::dsp::eq::EqBand;
 

@@ -23,13 +23,12 @@ axum = { version = "0.7", features = ["ws", "macros"] }
 tower = { version = "0.4", features = ["full"] }
 tower-http = { version = "0.5", features = ["cors", "fs", "trace"] }
 
-# D-Bus for BlueZ
+# D-Bus for BlueZ (zbus 4.x; zvariant is a transitive dep, no need to pin)
 zbus = { version = "4", features = ["tokio"] }
-zvariant = { version = "4", features = ["serde"] }
 
-# PipeWire
+# PipeWire Rust bindings
+# "spa" is NOT a separate crate — libspa is bundled as a re-export inside "pipewire"
 pipewire = "0.8"
-spa = "0.8"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -49,21 +48,14 @@ thiserror = "1"
 
 # Async utilities
 futures-util = "0.3"
-tokio-stream = "0.1"
-
-# UUID generation
-uuid = { version = "1", features = ["v4"] }
-
-# Concurrent data structures
-dashmap = "5"
 
 # Math for DSP
 libm = "0.2"
 
-# File watching / paths
+# File paths / dirs
 dirs = "5"
 
-# Time
+# Time (used in state for device last-seen timestamps)
 chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]

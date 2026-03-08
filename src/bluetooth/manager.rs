@@ -8,18 +8,17 @@
 //! - Exposes a command channel for the API layer
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use tokio::sync::{broadcast, mpsc};
+use futures_util::StreamExt;
+use tokio::sync::mpsc;
 use zbus::proxy;
-use zbus::{Connection, MatchRule, MessageStream};
-use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+use zbus::zvariant::{OwnedObjectPath, OwnedValue};
+use zbus::Connection;
 
 use super::agent;
-use super::device::{address_from_path, has_a2dp, path_from_address};
-use super::events::BluetoothEvent;
+use super::device::has_a2dp;
 use crate::state::{AppStateHandle, BluetoothStatus, DeviceInfo, DeviceState, SystemEvent};
 
 /// Commands sent to the BluetoothManager from the API layer.
@@ -46,20 +45,19 @@ pub enum BluetoothCommand {
     default_path = "/"
 )]
 trait ObjectManager {
-    async fn get_managed_objects(
+    #[allow(clippy::type_complexity)]
+    fn get_managed_objects(
         &self,
-    ) -> zbus::Result<
-        HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedValue>>>,
-    >;
+    ) -> zbus::Result<HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedValue>>>>;
 
     #[zbus(signal)]
-    async fn interfaces_added(
+    fn interfaces_added(
         path: OwnedObjectPath,
         interfaces: HashMap<String, HashMap<String, OwnedValue>>,
     );
 
     #[zbus(signal)]
-    async fn interfaces_removed(path: OwnedObjectPath, interfaces: Vec<String>);
+    fn interfaces_removed(path: OwnedObjectPath, interfaces: Vec<String>);
 }
 
 /// Proxy for the `org.bluez.Adapter1` D-Bus interface.
@@ -69,61 +67,58 @@ trait ObjectManager {
     default_path = "/org/bluez/hci0"
 )]
 trait Adapter1 {
-    async fn start_discovery(&self) -> zbus::Result<()>;
-    async fn stop_discovery(&self) -> zbus::Result<()>;
-    async fn remove_device(&self, device: &zbus::zvariant::ObjectPath<'_>) -> zbus::Result<()>;
+    fn start_discovery(&self) -> zbus::Result<()>;
+    fn stop_discovery(&self) -> zbus::Result<()>;
+    fn remove_device(&self, device: &zbus::zvariant::ObjectPath<'_>) -> zbus::Result<()>;
 
     #[zbus(property)]
-    async fn alias(&self) -> zbus::Result<String>;
+    fn alias(&self) -> zbus::Result<String>;
     #[zbus(property)]
-    async fn set_alias(&self, value: &str) -> zbus::Result<()>;
+    fn set_alias(&self, value: &str) -> zbus::Result<()>;
     #[zbus(property)]
-    async fn powered(&self) -> zbus::Result<bool>;
+    fn powered(&self) -> zbus::Result<bool>;
     #[zbus(property)]
-    async fn set_powered(&self, value: bool) -> zbus::Result<()>;
+    fn set_powered(&self, value: bool) -> zbus::Result<()>;
     #[zbus(property)]
-    async fn discoverable(&self) -> zbus::Result<bool>;
+    fn discoverable(&self) -> zbus::Result<bool>;
     #[zbus(property)]
-    async fn set_discoverable(&self, value: bool) -> zbus::Result<()>;
+    fn set_discoverable(&self, value: bool) -> zbus::Result<()>;
     #[zbus(property)]
-    async fn pairable(&self) -> zbus::Result<bool>;
+    fn pairable(&self) -> zbus::Result<bool>;
     #[zbus(property)]
-    async fn set_pairable(&self, value: bool) -> zbus::Result<()>;
+    fn set_pairable(&self, value: bool) -> zbus::Result<()>;
     #[zbus(property)]
-    async fn discovering(&self) -> zbus::Result<bool>;
+    fn discovering(&self) -> zbus::Result<bool>;
     #[zbus(property)]
-    async fn address(&self) -> zbus::Result<String>;
+    fn address(&self) -> zbus::Result<String>;
 }
 
 /// Proxy for `org.bluez.Device1`.
-#[proxy(
-    interface = "org.bluez.Device1",
-    default_service = "org.bluez"
-)]
+#[proxy(interface = "org.bluez.Device1", default_service = "org.bluez")]
 trait Device1 {
-    async fn connect(&self) -> zbus::Result<()>;
-    async fn disconnect(&self) -> zbus::Result<()>;
-    async fn pair(&self) -> zbus::Result<()>;
-    async fn cancel_pairing(&self) -> zbus::Result<()>;
+    fn connect(&self) -> zbus::Result<()>;
+    fn disconnect(&self) -> zbus::Result<()>;
+    fn pair(&self) -> zbus::Result<()>;
+    fn cancel_pairing(&self) -> zbus::Result<()>;
 
     #[zbus(property)]
-    async fn address(&self) -> zbus::Result<String>;
+    fn address(&self) -> zbus::Result<String>;
     #[zbus(property)]
-    async fn name(&self) -> zbus::Result<String>;
+    fn name(&self) -> zbus::Result<String>;
     #[zbus(property)]
-    async fn alias(&self) -> zbus::Result<String>;
+    fn alias(&self) -> zbus::Result<String>;
     #[zbus(property)]
-    async fn connected(&self) -> zbus::Result<bool>;
+    fn connected(&self) -> zbus::Result<bool>;
     #[zbus(property)]
-    async fn paired(&self) -> zbus::Result<bool>;
+    fn paired(&self) -> zbus::Result<bool>;
     #[zbus(property)]
-    async fn trusted(&self) -> zbus::Result<bool>;
+    fn trusted(&self) -> zbus::Result<bool>;
     #[zbus(property)]
-    async fn set_trusted(&self, value: bool) -> zbus::Result<()>;
+    fn set_trusted(&self, value: bool) -> zbus::Result<()>;
     #[zbus(property)]
-    async fn uuids(&self) -> zbus::Result<Vec<String>>;
+    fn uuids(&self) -> zbus::Result<Vec<String>>;
     #[zbus(property)]
-    async fn rssi(&self) -> zbus::Result<i16>;
+    fn rssi(&self) -> zbus::Result<i16>;
 }
 
 /// Proxy for `org.bluez.AgentManager1`.
@@ -133,19 +128,13 @@ trait Device1 {
     default_path = "/org/bluez"
 )]
 trait AgentManager1 {
-    async fn register_agent(
+    fn register_agent(
         &self,
         agent: &zbus::zvariant::ObjectPath<'_>,
         capability: &str,
     ) -> zbus::Result<()>;
-    async fn unregister_agent(
-        &self,
-        agent: &zbus::zvariant::ObjectPath<'_>,
-    ) -> zbus::Result<()>;
-    async fn request_default_agent(
-        &self,
-        agent: &zbus::zvariant::ObjectPath<'_>,
-    ) -> zbus::Result<()>;
+    fn unregister_agent(&self, agent: &zbus::zvariant::ObjectPath<'_>) -> zbus::Result<()>;
+    fn request_default_agent(&self, agent: &zbus::zvariant::ObjectPath<'_>) -> zbus::Result<()>;
 }
 
 /// The main Bluetooth manager.
@@ -204,7 +193,10 @@ impl BluetoothManager {
                 tracing::info!("BlueZ agent registered");
             }
             Err(e) => {
-                tracing::warn!("Failed to register agent (may already be registered): {}", e);
+                tracing::warn!(
+                    "Failed to register agent (may already be registered): {}",
+                    e
+                );
             }
         }
 
@@ -256,7 +248,7 @@ impl BluetoothManager {
 
     /// Configure the adapter: power on, set name, enable discoverable.
     async fn setup_adapter(&self, connection: &Connection) -> anyhow::Result<()> {
-        let adapter = Adapter1ProxyBuilder::new(connection)
+        let adapter = Adapter1Proxy::builder(connection)
             .path(self.adapter_path.as_str())?
             .build()
             .await?;
@@ -331,11 +323,7 @@ impl BluetoothManager {
     }
 
     /// Main event monitoring loop — watches for D-Bus signals from BlueZ.
-    async fn monitor_events(
-        connection: Connection,
-        state: AppStateHandle,
-        adapter_path: String,
-    ) {
+    async fn monitor_events(connection: Connection, state: AppStateHandle, _adapter_path: String) {
         tracing::info!("Starting Bluetooth event monitor");
 
         // Use a periodic poll approach for device property changes.
@@ -379,18 +367,17 @@ impl BluetoothManager {
             tokio::select! {
                 Some(signal) = interfaces_added_stream.next() => {
                     if let Ok(args) = signal.args() {
-                        let path = args.path.as_str();
-                        let interfaces = args.interfaces;
-
-                        if let Some(device_props) = interfaces.get("org.bluez.Device1") {
-                            if let Some(device_info) = extract_device_info(path, device_props) {
+                        let path = args.path.as_str().to_owned();
+                        // Access args.interfaces by reference — OwnedValue is not Clone
+                        if let Some(device_props) = args.interfaces.get("org.bluez.Device1") {
+                            if let Some(device_info) = extract_device_info(&path, device_props) {
                                 let addr = device_info.address.clone();
                                 let name = device_info.name.clone();
                                 tracing::info!(addr = %addr, name = %name, "New Bluetooth device discovered");
 
                                 {
                                     let mut app_state = state.state.write().await;
-                                    app_state.upsert_device(device_info.clone());
+                                    app_state.upsert_device(device_info);
                                 }
 
                                 state.broadcast(SystemEvent::DeviceStateChanged {
@@ -405,9 +392,10 @@ impl BluetoothManager {
                 }
                 Some(signal) = interfaces_removed_stream.next() => {
                     if let Ok(args) = signal.args() {
-                        let path = args.path.as_str();
-                        if args.interfaces.contains(&"org.bluez.Device1".to_string()) {
-                            if let Some(addr) = super::device::address_from_path(path) {
+                        let path = args.path.as_str().to_owned();
+                        let removed_ifaces = args.interfaces.clone();
+                        if removed_ifaces.contains(&"org.bluez.Device1".to_string()) {
+                            if let Some(addr) = super::device::address_from_path(&path) {
                                 tracing::info!(addr = %addr, "Bluetooth device removed");
                                 {
                                     let mut app_state = state.state.write().await;
@@ -417,7 +405,7 @@ impl BluetoothManager {
                             }
                         }
                         // Adapter removed — handle gracefully
-                        if args.interfaces.contains(&"org.bluez.Adapter1".to_string()) {
+                        if removed_ifaces.contains(&"org.bluez.Adapter1".to_string()) {
                             tracing::error!("Bluetooth adapter removed!");
                             {
                                 let mut app_state = state.state.write().await;
@@ -466,6 +454,13 @@ impl BluetoothManager {
             let mut current_state = state.state.write().await;
             let mut any_changed = false;
 
+            // Collect updates to apply after mutable borrows of devices are dropped.
+            // This avoids borrow conflicts (E0499/E0502) when accessing both
+            // current_state.devices (mutably) and current_state.active_device.
+            let mut set_active: Option<String> = None;
+            let mut clear_active: Option<String> = None;
+            let mut new_devices: Vec<crate::state::DeviceInfo> = Vec::new();
+
             for (path, interfaces) in &objects {
                 if let Some(device_props) = interfaces.get("org.bluez.Device1") {
                     if let Some(new_info) = extract_device_info(path.as_str(), device_props) {
@@ -479,21 +474,26 @@ impl BluetoothManager {
                             if was_connected != is_connected {
                                 any_changed = true;
                                 if is_connected {
-                                    crate::logging::events::bt_device_connected(&addr, &new_info.name);
+                                    crate::logging::events::bt_device_connected(
+                                        &addr,
+                                        &new_info.name,
+                                    );
                                     existing.transition(DeviceState::Connected);
 
-                                    // Check for A2DP
+                                    // Check for A2DP — defer active_device assignment
                                     if new_info.has_a2dp {
                                         existing.has_a2dp = true;
                                         existing.transition(DeviceState::ProfileNegotiated);
-                                        current_state.active_device = Some(addr.clone());
+                                        set_active = Some(addr.clone());
                                     }
                                 } else {
-                                    crate::logging::events::bt_device_disconnected(&addr, "connection_lost");
+                                    crate::logging::events::bt_device_disconnected(
+                                        &addr,
+                                        "connection_lost",
+                                    );
                                     existing.transition(DeviceState::Disconnected);
-                                    if current_state.active_device.as_deref() == Some(&addr) {
-                                        current_state.active_device = None;
-                                    }
+                                    // Defer active_device clear
+                                    clear_active = Some(addr.clone());
                                 }
                             }
 
@@ -502,12 +502,26 @@ impl BluetoothManager {
                                 existing.rssi = new_info.rssi;
                             }
                         } else {
-                            // New device found
-                            current_state.upsert_device(new_info);
+                            // New device found — collect to insert after loop
+                            new_devices.push(new_info);
                             any_changed = true;
                         }
                     }
                 }
+            }
+
+            // Apply deferred active_device changes (after mutable device borrows are done)
+            if let Some(new_active) = set_active {
+                current_state.active_device = Some(new_active);
+            }
+            if let Some(ref addr) = clear_active {
+                if current_state.active_device.as_deref() == Some(addr.as_str()) {
+                    current_state.active_device = None;
+                }
+            }
+            // Insert newly found devices
+            for dev in new_devices {
+                current_state.upsert_device(dev);
             }
 
             // Remove devices that are no longer in BlueZ
@@ -550,31 +564,24 @@ impl BluetoothManager {
                     tracing::info!("Command: StartScan");
                     agent::set_pairing_allowed(true);
 
-                    let adapter = match Adapter1ProxyBuilder::new(&connection)
-                        .path(adapter_path.as_str())
-                        .and_then(|b| Ok(b))
+                    if let Ok(builder) =
+                        Adapter1Proxy::builder(&connection).path(adapter_path.as_str())
                     {
-                        Ok(b) => b.build().await,
-                        Err(e) => {
-                            tracing::error!("Failed to build adapter proxy: {}", e);
-                            continue;
-                        }
-                    };
-
-                    match adapter {
-                        Ok(a) => {
-                            if let Err(e) = a.start_discovery().await {
-                                tracing::warn!("Failed to start discovery: {}", e);
-                            } else {
-                                let mut s = state.state.write().await;
-                                s.bluetooth_status = BluetoothStatus::Scanning;
-                                drop(s);
-                                state.broadcast(SystemEvent::BluetoothStatusChanged {
-                                    status: "scanning".to_string(),
-                                });
+                        match builder.build().await {
+                            Ok(a) => {
+                                if let Err(e) = a.start_discovery().await {
+                                    tracing::warn!("Failed to start discovery: {}", e);
+                                } else {
+                                    let mut s = state.state.write().await;
+                                    s.bluetooth_status = BluetoothStatus::Scanning;
+                                    drop(s);
+                                    state.broadcast(SystemEvent::BluetoothStatusChanged {
+                                        status: "scanning".to_string(),
+                                    });
+                                }
                             }
+                            Err(e) => tracing::warn!("Failed to get adapter: {}", e),
                         }
-                        Err(e) => tracing::warn!("Failed to get adapter: {}", e),
                     }
 
                     // Auto-stop scan after 30 seconds
@@ -584,7 +591,7 @@ impl BluetoothManager {
                     tokio::spawn(async move {
                         tokio::time::sleep(Duration::from_secs(30)).await;
                         agent::set_pairing_allowed(false);
-                        if let Ok(b) = Adapter1ProxyBuilder::new(&conn_clone).path(ap_clone.as_str()) {
+                        if let Ok(b) = Adapter1Proxy::builder(&conn_clone).path(ap_clone.as_str()) {
                             if let Ok(a) = b.build().await {
                                 let discovering = a.discovering().await.unwrap_or(false);
                                 if discovering {
@@ -607,7 +614,7 @@ impl BluetoothManager {
                     tracing::info!("Command: StopScan");
                     agent::set_pairing_allowed(false);
 
-                    if let Ok(b) = Adapter1ProxyBuilder::new(&connection).path(adapter_path.as_str()) {
+                    if let Ok(b) = Adapter1Proxy::builder(&connection).path(adapter_path.as_str()) {
                         if let Ok(a) = b.build().await {
                             let _ = a.stop_discovery().await;
                         }
@@ -651,10 +658,7 @@ impl BluetoothManager {
                     let state_clone = state.clone();
                     let addr_clone = address.clone();
                     tokio::spawn(async move {
-                        match Device1ProxyBuilder::new(&conn_clone)
-                            .path(device_path.as_str())
-                            .and_then(|b| Ok(b))
-                        {
+                        match Device1Proxy::builder(&conn_clone).path(device_path.as_str()) {
                             Ok(b) => match b.build().await {
                                 Ok(device) => {
                                     // Trust the device so it auto-reconnects
@@ -679,7 +683,9 @@ impl BluetoothManager {
                                 }
                                 Err(e) => tracing::warn!("Failed to build device proxy: {}", e),
                             },
-                            Err(e) => tracing::warn!("Failed to create device proxy builder: {}", e),
+                            Err(e) => {
+                                tracing::warn!("Failed to create device proxy builder: {}", e)
+                            }
                         }
                     });
                 }
@@ -692,7 +698,8 @@ impl BluetoothManager {
                     let state_clone = state.clone();
                     let addr_clone = address.clone();
                     tokio::spawn(async move {
-                        if let Ok(b) = Device1ProxyBuilder::new(&conn_clone).path(device_path.as_str()) {
+                        if let Ok(b) = Device1Proxy::builder(&conn_clone).path(device_path.as_str())
+                        {
                             if let Ok(device) = b.build().await {
                                 if let Err(e) = device.disconnect().await {
                                     tracing::warn!(addr = %addr_clone, error = %e, "Failed to disconnect");
@@ -712,7 +719,10 @@ impl BluetoothManager {
                             name: String::new(),
                             state: DeviceState::Disconnected,
                         });
-                        crate::logging::events::bt_device_disconnected(&addr_clone, "user_requested");
+                        crate::logging::events::bt_device_disconnected(
+                            &addr_clone,
+                            "user_requested",
+                        );
                     });
                 }
 
@@ -720,9 +730,11 @@ impl BluetoothManager {
                     tracing::info!(addr = %address, "Command: Remove");
                     let device_path = super::device::path_from_address(&adapter_path, &address);
 
-                    if let Ok(b) = Adapter1ProxyBuilder::new(&connection).path(adapter_path.as_str()) {
+                    if let Ok(b) = Adapter1Proxy::builder(&connection).path(adapter_path.as_str()) {
                         if let Ok(adapter) = b.build().await {
-                            if let Ok(path) = zbus::zvariant::ObjectPath::try_from(device_path.as_str()) {
+                            if let Ok(path) =
+                                zbus::zvariant::ObjectPath::try_from(device_path.as_str())
+                            {
                                 let _ = adapter.remove_device(&path).await;
                             }
                         }
@@ -737,7 +749,7 @@ impl BluetoothManager {
 
                 BluetoothCommand::SetName { name } => {
                     tracing::info!(name = %name, "Command: SetName");
-                    if let Ok(b) = Adapter1ProxyBuilder::new(&connection).path(adapter_path.as_str()) {
+                    if let Ok(b) = Adapter1Proxy::builder(&connection).path(adapter_path.as_str()) {
                         if let Ok(adapter) = b.build().await {
                             if let Err(e) = adapter.set_alias(&name).await {
                                 tracing::warn!("Failed to set adapter name: {}", e);
@@ -755,53 +767,57 @@ impl BluetoothManager {
 }
 
 /// Extract a DeviceInfo from a BlueZ Device1 properties map.
-fn extract_device_info(
-    path: &str,
-    props: &HashMap<String, OwnedValue>,
-) -> Option<DeviceInfo> {
-    let address = match props.get("Address") {
-        Some(v) => match v.downcast_ref::<str>() {
-            Some(s) => s.to_string(),
-            None => return None,
-        },
-        None => return None,
-    };
+///
+/// Uses `Value` enum pattern matching via `OwnedValue: Deref<Target = Value<'static>>`
+/// to avoid lifetime issues with `TryFrom` APIs in zvariant 4.x.
+fn extract_device_info(_path: &str, props: &HashMap<String, OwnedValue>) -> Option<DeviceInfo> {
+    use zbus::zvariant::Value;
+
+    let address = props.get("Address").and_then(|v| match &**v {
+        Value::Str(s) => Some(s.to_string()),
+        _ => None,
+    })?;
 
     let name = props
         .get("Alias")
-        .and_then(|v| v.downcast_ref::<str>())
-        .or_else(|| props.get("Name").and_then(|v| v.downcast_ref::<str>()))
-        .unwrap_or(&address)
-        .to_string();
+        .or_else(|| props.get("Name"))
+        .and_then(|v| match &**v {
+            Value::Str(s) => Some(s.to_string()),
+            _ => None,
+        })
+        .unwrap_or_else(|| address.clone());
 
     let connected = props
         .get("Connected")
-        .and_then(|v| v.downcast_ref::<bool>())
-        .copied()
-        .unwrap_or(false);
+        .is_some_and(|v| matches!(&**v, Value::Bool(true)));
 
     let paired = props
         .get("Paired")
-        .and_then(|v| v.downcast_ref::<bool>())
-        .copied()
-        .unwrap_or(false);
+        .is_some_and(|v| matches!(&**v, Value::Bool(true)));
 
     let trusted = props
         .get("Trusted")
-        .and_then(|v| v.downcast_ref::<bool>())
-        .copied()
-        .unwrap_or(false);
+        .is_some_and(|v| matches!(&**v, Value::Bool(true)));
 
     let uuids: Vec<String> = props
         .get("UUIDs")
-        .and_then(|v| v.downcast_ref::<Vec<String>>())
-        .cloned()
+        .and_then(|v| match &**v {
+            Value::Array(arr) => Some(
+                arr.iter()
+                    .filter_map(|item| match item {
+                        Value::Str(s) => Some(s.to_string()),
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        })
         .unwrap_or_default();
 
-    let rssi = props
-        .get("RSSI")
-        .and_then(|v| v.downcast_ref::<i16>())
-        .copied();
+    let rssi = props.get("RSSI").and_then(|v| match &**v {
+        Value::I16(i) => Some(*i),
+        _ => None,
+    });
 
     let has_a2dp = has_a2dp(&uuids);
 
