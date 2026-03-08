@@ -96,6 +96,9 @@ async fn main() -> anyhow::Result<()> {
         "Starting SoundSync"
     );
 
+    // Ensure a capture sink exists so BT audio has somewhere to route
+    ensure_capture_sink();
+
     // Initialise shared state
     let state = AppStateHandle::new(config);
 
@@ -174,6 +177,52 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("SoundSync stopped");
     Ok(())
+}
+
+/// Create a PipeWire/PulseAudio null sink that acts as the audio capture bus.
+///
+/// On headless servers (no sound card) WirePlumber has no output sink to route
+/// Bluetooth A2DP audio to, so nothing ever reaches the default sink monitor
+/// that `parec` and the browser stream capture from.  Creating this null sink
+/// and setting it as the system default gives WirePlumber a routing target;
+/// `parec --device=@DEFAULT_MONITOR@` then captures whatever BT audio arrives.
+///
+/// The call is best-effort — if `pactl` is absent the app continues without it.
+fn ensure_capture_sink() {
+    let load = std::process::Command::new("pactl")
+        .args([
+            "load-module",
+            "module-null-sink",
+            "media.class=Audio/Sink",
+            "sink_name=soundsync-capture",
+            "sink_properties=device.description=SoundSync-Capture",
+        ])
+        .output();
+
+    match load {
+        Ok(out) if out.status.success() => {
+            tracing::info!("Created null sink 'soundsync-capture' for audio capture");
+            // Make it the default so WirePlumber routes BT audio here
+            let _ = std::process::Command::new("pactl")
+                .args(["set-default-sink", "soundsync-capture"])
+                .status();
+        }
+        Ok(_) => {
+            // Module may already be loaded from a previous run — that's fine.
+            // Still try to set it as the default in case it exists.
+            let _ = std::process::Command::new("pactl")
+                .args(["set-default-sink", "soundsync-capture"])
+                .status();
+            tracing::debug!("pactl load-module returned non-zero (sink may already exist)");
+        }
+        Err(e) => {
+            tracing::warn!(
+                "pactl not available, cannot create capture sink: {}. \
+                 Audio capture will use whatever @DEFAULT_MONITOR@ resolves to.",
+                e
+            );
+        }
+    }
 }
 
 /// Wait for Ctrl+C or SIGTERM to initiate graceful shutdown.

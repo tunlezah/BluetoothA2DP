@@ -321,16 +321,27 @@ pub async fn monitor_pipewire_state(state: AppStateHandle) {
         tokio::select! {
             Ok(event) = rx.recv() => {
                 if let SystemEvent::StreamStarted { .. } = event {
+                    // PipeWire detected a BT node — mark source as ready then
+                    // immediately advance to AudioActive so the spectrum
+                    // analyser and the browser UI both pick up the stream.
                     advance_devices_to_source_ready(&state).await;
+                    advance_devices_to_audio_active(&state).await;
                 }
             }
             _ = interval.tick() => {
+                // Periodic sweep: advance any device that has reached
+                // ProfileNegotiated or PipewireSourceReady all the way to
+                // AudioActive and fire StreamStarted so the spectrum analyser
+                // and browser UI update even if PipeWire node detection fired
+                // before the device was in the device list.
                 advance_devices_to_source_ready(&state).await;
+                advance_devices_to_audio_active(&state).await;
             }
         }
     }
 }
 
+/// Advance devices from ProfileNegotiated → PipewireSourceReady.
 async fn advance_devices_to_source_ready(state: &AppStateHandle) {
     let candidates: Vec<(String, String)> = {
         let s = state.state.read().await;
@@ -352,6 +363,41 @@ async fn advance_devices_to_source_ready(state: &AppStateHandle) {
                     name,
                     state: DeviceState::PipewireSourceReady,
                 });
+                return;
+            }
+        }
+    }
+}
+
+/// Advance devices from PipewireSourceReady (or ProfileNegotiated) → AudioActive
+/// and broadcast StreamStarted so the spectrum analyser and browser UI activate.
+async fn advance_devices_to_audio_active(state: &AppStateHandle) {
+    let candidates: Vec<(String, String)> = {
+        let s = state.state.read().await;
+        s.devices
+            .values()
+            .filter(|d| {
+                d.state == DeviceState::PipewireSourceReady
+                    || d.state == DeviceState::ProfileNegotiated
+            })
+            .map(|d| (d.address.clone(), d.name.clone()))
+            .collect()
+    };
+
+    for (addr, name) in candidates {
+        let mut s = state.state.write().await;
+        if let Some(dev) = s.devices.get_mut(&addr) {
+            if dev.state == DeviceState::PipewireSourceReady
+                || dev.state == DeviceState::ProfileNegotiated
+            {
+                dev.transition(DeviceState::AudioActive);
+                drop(s);
+                state.broadcast(SystemEvent::DeviceStateChanged {
+                    address: addr.clone(),
+                    name,
+                    state: DeviceState::AudioActive,
+                });
+                state.broadcast(SystemEvent::StreamStarted { address: addr });
                 return;
             }
         }
