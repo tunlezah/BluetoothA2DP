@@ -504,7 +504,7 @@ async fn get_audio_stream() -> impl axum::response::IntoResponse {
     let sh_child = tokio::process::Command::new("sh")
         .args([
             "-c",
-            "parec --format=s16le --rate=44100 --channels=2 --latency-msec=200 \
+            "parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=44100 --channels=2 --latency-msec=200 \
              | ffmpeg -hide_banner -loglevel quiet \
                       -f s16le -ar 44100 -ac 2 -i pipe:0 \
                       -acodec libmp3lame -b:a 128k -f mp3 pipe:1",
@@ -526,6 +526,7 @@ async fn get_audio_stream() -> impl axum::response::IntoResponse {
     // data-chunk size field is set to 0xFFFF_FFFE so browsers stream forever.
     let parec = tokio::process::Command::new("parec")
         .args([
+            "--device=@DEFAULT_MONITOR@",
             "--format=s16le",
             "--rate=44100",
             "--channels=2",

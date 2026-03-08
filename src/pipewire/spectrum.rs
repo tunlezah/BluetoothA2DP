@@ -255,10 +255,13 @@ fn precompute_band_bins(n: usize) -> Vec<(usize, usize)> {
 /// Attempts `parec` (pulseaudio-utils) first, then `pw-cat` (pipewire-audio).
 /// Returns `None` if neither tool is available.
 fn spawn_capture_process() -> Option<Child> {
-    // parec: captures from the default sink monitor
+    // parec: explicitly capture from the default sink monitor so we always get
+    // playback audio, not whatever @DEFAULT_SOURCE@ happens to point to (which
+    // can be a microphone on some systems).
     let parec = Command::new("parec")
         .args([
             "--raw",
+            "--device=@DEFAULT_MONITOR@",
             "--channels=1",
             "--rate=44100",
             "--format=float32le",
@@ -272,10 +275,11 @@ fn spawn_capture_process() -> Option<Child> {
         return Some(child);
     }
 
-    // pw-cat fallback: PipeWire native record
+    // pw-cat fallback: PipeWire native record from the default sink monitor
     let pw_cat = Command::new("pw-cat")
         .args([
             "--record",
+            "--target=@DEFAULT_SINK@.monitor",
             "--channels=1",
             "--rate=44100",
             "--format=f32",
