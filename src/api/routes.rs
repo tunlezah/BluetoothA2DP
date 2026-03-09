@@ -632,7 +632,10 @@ async fn get_audio_stream(
 
 /// Attempt to start a `sh -c <cmd>` pipeline and return a streaming response.
 /// Returns `None` if the process could not be spawned or produced no stdout.
-async fn try_ffmpeg_stream(cmd: String, content_type: &'static str) -> Option<axum::response::Response> {
+async fn try_ffmpeg_stream(
+    cmd: String,
+    content_type: &'static str,
+) -> Option<axum::response::Response> {
     let mut child = tokio::process::Command::new("sh")
         .args(["-c", &cmd])
         .stdout(std::process::Stdio::piped())

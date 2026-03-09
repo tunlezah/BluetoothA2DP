@@ -215,8 +215,12 @@ pub struct Config {
 }
 
 impl Config {
-    fn default_aac_encoder() -> String { "aac".to_string() }
-    fn default_stream_quality() -> String { "mp3".to_string() }
+    fn default_aac_encoder() -> String {
+        "aac".to_string()
+    }
+    fn default_stream_quality() -> String {
+        "mp3".to_string()
+    }
 }
 
 impl Default for Config {
