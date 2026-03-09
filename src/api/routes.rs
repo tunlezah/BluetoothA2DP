@@ -461,46 +461,16 @@ async fn delete_preset(
 
 /// Stream live audio from the PipeWire/PulseAudio default sink to the browser.
 ///
-/// Tries three strategies in order:
-///   1. `ffmpeg -f pulse` — MP3 128 kbps (works in all browsers incl. Safari).
-///   2. `parec | ffmpeg` shell pipeline — MP3 via parec + ffmpeg.
-///   3. `parec` raw PCM wrapped in a streaming WAV header — no ffmpeg needed,
+/// Tries two strategies in order:
+///   1. `parec | ffmpeg` shell pipeline — captures from the sink monitor and
+///      encodes to MP3 128 kbps (works in all browsers incl. Safari).
+///   2. `parec` raw PCM wrapped in a streaming WAV header — no ffmpeg needed,
 ///      universally supported by browsers.
+///
+/// Both strategies capture from `@DEFAULT_MONITOR@` (the sink monitor) rather
+/// than the default source (microphone), matching the spectrum analyser capture.
 async fn get_audio_stream() -> impl axum::response::IntoResponse {
-    // ── Strategy 1: ffmpeg reading directly from PulseAudio ──────────────────
-    let child = tokio::process::Command::new("ffmpeg")
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "quiet",
-            "-f",
-            "pulse",
-            "-i",
-            "default",
-            "-acodec",
-            "libmp3lame",
-            "-b:a",
-            "128k",
-            "-f",
-            "mp3",
-            "pipe:1",
-        ])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-
-    if let Ok(mut child) = child {
-        if let Some(stdout) = child.stdout.take() {
-            tracing::info!(
-                "Audio stream: ffmpeg/pulse MP3 encoder started (pid {})",
-                child.id().unwrap_or(0)
-            );
-            return compressed_stream_response(stdout, child, "audio/mpeg");
-        }
-        let _ = child.kill().await;
-    }
-
-    // ── Strategy 2: parec | ffmpeg shell pipeline ─────────────────────────────
+    // ── Strategy 1: parec | ffmpeg shell pipeline ─────────────────────────────
     let sh_child = tokio::process::Command::new("sh")
         .args([
             "-c",
@@ -521,7 +491,7 @@ async fn get_audio_stream() -> impl axum::response::IntoResponse {
         let _ = child.kill().await;
     }
 
-    // ── Strategy 3: parec → streaming WAV (no ffmpeg required) ───────────────
+    // ── Strategy 2: parec → streaming WAV (no ffmpeg required) ───────────────
     // Stereo 44100 Hz 16-bit signed-LE PCM wrapped in a WAV container whose
     // data-chunk size field is set to 0xFFFF_FFFE so browsers stream forever.
     let parec = tokio::process::Command::new("parec")
