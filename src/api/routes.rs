@@ -169,6 +169,7 @@ pub fn build_router(
         .route("/api/eq/preset/:name", delete(delete_preset))
         // Audio stream
         .route("/audio/stream", get(get_audio_stream))
+        .route("/api/stream/info", get(get_stream_info))
         // WebSocket
         .route("/ws/status", get(ws_handler))
         // Static files — serve web/ directory
@@ -459,6 +460,40 @@ async fn delete_preset(
     }
 }
 
+/// Return the codec and quality parameters that the audio stream will use.
+///
+/// Checks once whether ffmpeg is available on the system and reports the
+/// resulting format so the web UI can display it without guessing.
+/// This is a lightweight probe — it does NOT start a stream.
+async fn get_stream_info() -> Json<serde_json::Value> {
+    let has_ffmpeg = tokio::process::Command::new("ffmpeg")
+        .args(["-version"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if has_ffmpeg {
+        Json(serde_json::json!({
+            "codec": "mp3",
+            "bitrate_kbps": 128,
+            "sample_rate": 44100,
+            "channels": 2,
+            "label": "MP3 128k"
+        }))
+    } else {
+        Json(serde_json::json!({
+            "codec": "pcm",
+            "bitrate_kbps": 1411,
+            "sample_rate": 44100,
+            "channels": 2,
+            "label": "PCM 16-bit"
+        }))
+    }
+}
+
 /// Stream live audio from the PipeWire/PulseAudio default sink to the browser.
 ///
 /// Tries two strategies in order:
@@ -474,10 +509,15 @@ async fn get_audio_stream() -> impl axum::response::IntoResponse {
     let sh_child = tokio::process::Command::new("sh")
         .args([
             "-c",
-            "parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=44100 --channels=2 --latency-msec=200 \
+            // --latency-msec=50 keeps the parec ring-buffer small so the first
+            // audio reaches the browser faster.  ffmpeg's -fflags +nobuffer and
+            // -flush_packets 1 prevent ffmpeg from holding encoded frames in its
+            // own output buffer, giving a more responsive start-up and seek.
+            "parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
              | ffmpeg -hide_banner -loglevel quiet \
+                      -fflags +nobuffer \
                       -f s16le -ar 44100 -ac 2 -i pipe:0 \
-                      -acodec libmp3lame -b:a 128k -f mp3 pipe:1",
+                      -acodec libmp3lame -b:a 128k -f mp3 -flush_packets 1 pipe:1",
         ])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -500,7 +540,7 @@ async fn get_audio_stream() -> impl axum::response::IntoResponse {
             "--format=s16le",
             "--rate=44100",
             "--channels=2",
-            "--latency-msec=200",
+            "--latency-msec=50",
         ])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())

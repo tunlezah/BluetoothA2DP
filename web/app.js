@@ -212,6 +212,7 @@ const SoundSync = (() => {
     initTheme();
     spectrum.init();
     connectWebSocket();
+    fetchStreamInfo();
 
     document.addEventListener('keydown', (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
@@ -331,6 +332,16 @@ const SoundSync = (() => {
     }
 
     updatePlaybackPanel();
+  }
+
+  // ── Stream quality info ────────────────────────────────────────────────────
+
+  async function fetchStreamInfo() {
+    try {
+      const data = await apiFetch('/api/stream/info');
+      const el = document.getElementById('stat-codec');
+      if (el && data.label) el.textContent = `A2DP → ${data.label}`;
+    } catch (_) {}
   }
 
   // ── API helpers ────────────────────────────────────────────────────────────

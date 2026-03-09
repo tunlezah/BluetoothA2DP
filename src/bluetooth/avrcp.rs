@@ -3,8 +3,10 @@
 //! When a Bluetooth device is connected and supports AVRCP, BlueZ exposes an
 //! `org.bluez.MediaPlayer1` object at the device's D-Bus path + `/player0`.
 //!
-//! This task polls that interface every second and broadcasts `TrackChanged`
+//! This task polls that interface every 250 ms and broadcasts `TrackChanged`
 //! and `PlaybackStatusChanged` events whenever metadata or status changes.
+//! The proxy is cached for the active device and only rebuilt when the device
+//! address changes, avoiding per-poll D-Bus round-trips.
 //!
 //! If the device does not support AVRCP, the proxy build will fail silently
 //! and the UI will fall back to showing only the device name.
@@ -37,6 +39,9 @@ trait MediaPlayer1 {
 ///
 /// Spawned once in main. Loops forever, polling the active device's
 /// MediaPlayer1 object and broadcasting state changes.
+///
+/// The proxy is cached per device address and only rebuilt on device change,
+/// keeping D-Bus overhead minimal between polls.
 pub async fn run_avrcp_monitor(state: AppStateHandle) {
     let connection = match Connection::system().await {
         Ok(c) => c,
@@ -50,7 +55,12 @@ pub async fn run_avrcp_monitor(state: AppStateHandle) {
 
     let mut last_track: Option<TrackInfo> = None;
     let mut last_status = PlaybackStatus::Unknown;
-    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    // Poll at 250 ms for snappy play/pause and track-change updates.
+    let mut interval = tokio::time::interval(Duration::from_millis(250));
+
+    // Cached proxy — rebuilt only when the active device address changes.
+    let mut cached_addr: Option<String> = None;
+    let mut cached_proxy: Option<MediaPlayer1Proxy<'_>> = None;
 
     loop {
         interval.tick().await;
@@ -90,27 +100,53 @@ pub async fn run_avrcp_monitor(state: AppStateHandle) {
                     status: PlaybackStatus::Unknown,
                 });
             }
+            // Drop any cached proxy — device gone
+            cached_addr = None;
+            cached_proxy = None;
             continue;
         };
 
-        // Build the MediaPlayer1 D-Bus path:
-        //   /org/bluez/<adapter>/dev_AA_BB_CC_DD_EE_FF/player0
-        let dev_seg = addr.replace(':', "_");
-        let player_path = format!("/org/bluez/{}/dev_{}/player0", adapter_name, dev_seg);
+        // Rebuild the proxy only when the active device changes.
+        if cached_addr.as_deref() != Some(&addr) {
+            let dev_seg = addr.replace(':', "_");
+            let player_path = format!("/org/bluez/{}/dev_{}/player0", adapter_name, dev_seg);
 
-        let builder = match MediaPlayer1Proxy::builder(&connection).path(player_path.as_str()) {
-            Ok(b) => b,
-            Err(_) => continue,
-        };
-        let proxy = match builder.build().await {
-            Ok(p) => p,
-            Err(_) => continue, // Device does not support AVRCP
+            // Convert to ObjectPath<'static> (owned) *before* calling .path()
+            // so the ProxyBuilder doesn't borrow player_path across the await.
+            let Ok(object_path) = zbus::zvariant::ObjectPath::try_from(player_path) else {
+                cached_addr = Some(addr.clone());
+                cached_proxy = None;
+                continue;
+            };
+            cached_addr = Some(addr.clone());
+            cached_proxy = match MediaPlayer1Proxy::builder(&connection).path(object_path) {
+                Ok(builder) => match builder.build().await {
+                    Ok(p) => {
+                        tracing::debug!(addr = %addr, "AVRCP proxy built for device");
+                        Some(p)
+                    }
+                    Err(_) => None,
+                },
+                Err(_) => None, // device doesn't support AVRCP
+            };
+        }
+
+        // Clone the proxy so cached_proxy is not borrowed while we poll it —
+        // zbus proxies are Arc-backed so this is a pointer copy, not a deep clone.
+        let proxy = match cached_proxy.clone() {
+            Some(p) => p,
+            None => continue,
         };
 
         // Read playback status
         let new_status = match proxy.status().await {
             Ok(s) => parse_playback_status(&s),
-            Err(_) => PlaybackStatus::Unknown,
+            Err(_) => {
+                // Proxy went stale — force rebuild next iteration
+                cached_addr = None;
+                cached_proxy = None;
+                continue;
+            }
         };
 
         // Read track metadata
