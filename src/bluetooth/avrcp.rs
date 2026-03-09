@@ -111,12 +111,15 @@ pub async fn run_avrcp_monitor(state: AppStateHandle) {
             let dev_seg = addr.replace(':', "_");
             let player_path = format!("/org/bluez/{}/dev_{}/player0", adapter_name, dev_seg);
 
-            // builder() returns ProxyBuilder directly; .path() consumes the
-            // string immediately (no borrow held after the call), so we can
-            // safely await .build() without an async capture of player_path.
+            // Convert to ObjectPath<'static> (owned) *before* calling .path()
+            // so the ProxyBuilder doesn't borrow player_path across the await.
+            let Ok(object_path) = zbus::zvariant::ObjectPath::try_from(player_path) else {
+                cached_addr = Some(addr.clone());
+                cached_proxy = None;
+                continue;
+            };
             cached_addr = Some(addr.clone());
-            cached_proxy = match MediaPlayer1Proxy::builder(&connection).path(player_path.as_str())
-            {
+            cached_proxy = match MediaPlayer1Proxy::builder(&connection).path(object_path) {
                 Ok(builder) => match builder.build().await {
                     Ok(p) => {
                         tracing::debug!(addr = %addr, "AVRCP proxy built for device");
