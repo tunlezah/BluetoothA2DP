@@ -28,6 +28,7 @@ const SoundSync = (() => {
     playbackStatus: 'unknown', // 'playing' | 'paused' | 'stopped' | 'unknown'
     isStreaming: false,
     theme: 'dark',           // 'dark' | 'light' | 'system'
+    streamQuality: 'mp3',    // 'mp3' | 'aac' | 'wav'
   };
 
   // ── Spectrum analyser ──────────────────────────────────────────────────────
@@ -212,7 +213,7 @@ const SoundSync = (() => {
     initTheme();
     spectrum.init();
     connectWebSocket();
-    fetchStreamInfo();
+    fetchStreamQualities();
 
     document.addEventListener('keydown', (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
@@ -334,13 +335,58 @@ const SoundSync = (() => {
     updatePlaybackPanel();
   }
 
-  // ── Stream quality info ────────────────────────────────────────────────────
+  // ── Stream quality ─────────────────────────────────────────────────────────
+
+  // Fetch available qualities from the server and sync the selector to the
+  // currently configured quality.  Also updates the codec stat label.
+  async function fetchStreamQualities() {
+    try {
+      const data = await apiFetch('/api/stream/qualities');
+      if (data.current) {
+        state.streamQuality = data.current;
+        const sel = document.getElementById('quality-select');
+        if (sel) sel.value = data.current;
+      }
+      // Refresh the codec stat label with the resolved quality info.
+      fetchStreamInfo();
+    } catch (_) {}
+  }
 
   async function fetchStreamInfo() {
     try {
       const data = await apiFetch('/api/stream/info');
       const el = document.getElementById('stat-codec');
       if (el && data.label) el.textContent = `A2DP → ${data.label}`;
+    } catch (_) {}
+  }
+
+  // Change the stream quality, persist it to the server, and reconnect any
+  // active browser audio session so the change takes effect immediately.
+  async function setStreamQuality(quality) {
+    try {
+      await apiFetch('/api/stream/quality', {
+        method: 'POST',
+        body: JSON.stringify({ quality }),
+      });
+      state.streamQuality = quality;
+      fetchStreamInfo();
+
+      // If the browser is currently playing, restart with the new quality.
+      const audio = getAudioPlayer();
+      if (audio && !audio.paused) {
+        const stop = () => {
+          audio.pause();
+          audio.src = '';
+          // Small delay so the old stream closes before the new one opens.
+          setTimeout(() => toggleBrowserAudio(), 120);
+        };
+        if (_playPromise) {
+          _playPromise.then(stop).catch(() => {});
+          _playPromise = null;
+        } else {
+          stop();
+        }
+      }
     } catch (_) {}
   }
 
@@ -436,7 +482,7 @@ const SoundSync = (() => {
     if (audio.paused) {
       // Set src fresh each time so the browser opens a new HTTP connection.
       // Do NOT call audio.load() — that aborts the pending play() promise.
-      audio.src = '/audio/stream';
+      audio.src = `/audio/stream?quality=${encodeURIComponent(state.streamQuality)}`;
       _playPromise = audio.play();
       if (_playPromise) {
         _playPromise.then(() => {
@@ -875,6 +921,7 @@ const SoundSync = (() => {
     toggleSettings,
     applyName,
     refresh,
+    setStreamQuality,
     get state() { return state; },
   };
 

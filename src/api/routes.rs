@@ -18,7 +18,7 @@
 //!   /ws/status                    — WebSocket for real-time updates
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::Json,
     routing::{delete, get, post},
@@ -123,6 +123,16 @@ struct PresetsResponse {
     presets: Vec<String>,
 }
 
+#[derive(Deserialize)]
+struct StreamQueryParams {
+    quality: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SetQualityRequest {
+    quality: String,
+}
+
 #[derive(Serialize)]
 struct ApiError {
     error: String,
@@ -170,6 +180,8 @@ pub fn build_router(
         // Audio stream
         .route("/audio/stream", get(get_audio_stream))
         .route("/api/stream/info", get(get_stream_info))
+        .route("/api/stream/qualities", get(get_stream_qualities))
+        .route("/api/stream/quality", post(post_stream_quality))
         // WebSocket
         .route("/ws/status", get(ws_handler))
         // Static files — serve web/ directory
@@ -460,80 +472,183 @@ async fn delete_preset(
     }
 }
 
-/// Return the codec and quality parameters that the audio stream will use.
-///
-/// Checks once whether ffmpeg is available on the system and reports the
-/// resulting format so the web UI can display it without guessing.
-/// This is a lightweight probe — it does NOT start a stream.
-async fn get_stream_info() -> Json<serde_json::Value> {
-    let has_ffmpeg = tokio::process::Command::new("ffmpeg")
-        .args(["-version"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .map(|s| s.success())
-        .unwrap_or(false);
+/// Return the codec and quality parameters for the currently configured stream quality.
+async fn get_stream_info(State(state): State<ApiState>) -> Json<serde_json::Value> {
+    let s = state.app.state.read().await;
+    let quality = s.config.stream_quality.clone();
+    let aac_encoder = s.config.aac_encoder.clone();
+    drop(s);
 
-    if has_ffmpeg {
-        Json(serde_json::json!({
-            "codec": "mp3",
-            "bitrate_kbps": 128,
+    match quality.as_str() {
+        "aac" => Json(serde_json::json!({
+            "codec": "aac",
+            "bitrate_kbps": 192,
             "sample_rate": 44100,
             "channels": 2,
-            "label": "MP3 128k"
-        }))
-    } else {
-        Json(serde_json::json!({
+            "label": format!("AAC 192k ({})", aac_encoder),
+            "encoder": aac_encoder,
+        })),
+        "wav" => Json(serde_json::json!({
             "codec": "pcm",
             "bitrate_kbps": 1411,
             "sample_rate": 44100,
             "channels": 2,
-            "label": "PCM 16-bit"
-        }))
+            "label": "Lossless WAV",
+        })),
+        _ => Json(serde_json::json!({
+            "codec": "mp3",
+            "bitrate_kbps": 128,
+            "sample_rate": 44100,
+            "channels": 2,
+            "label": "MP3 128k",
+        })),
     }
+}
+
+/// Return the list of available stream qualities and the currently selected one.
+async fn get_stream_qualities(State(state): State<ApiState>) -> Json<serde_json::Value> {
+    let s = state.app.state.read().await;
+    let current = s.config.stream_quality.clone();
+    let aac_encoder = s.config.aac_encoder.clone();
+    drop(s);
+
+    Json(serde_json::json!({
+        "qualities": [
+            {
+                "id": "mp3",
+                "label": "MP3 128k",
+                "codec": "mp3",
+                "bitrate_kbps": 128,
+                "description": "Compatible with all browsers"
+            },
+            {
+                "id": "aac",
+                "label": "AAC 192k",
+                "codec": "aac",
+                "bitrate_kbps": 192,
+                "encoder": aac_encoder,
+                "description": "Higher quality · Safari & Chrome"
+            },
+            {
+                "id": "wav",
+                "label": "Lossless WAV",
+                "codec": "pcm",
+                "bitrate_kbps": 1411,
+                "description": "Uncompressed · LAN recommended"
+            }
+        ],
+        "current": current
+    }))
+}
+
+/// Set the default stream quality and persist it to config.toml.
+async fn post_stream_quality(
+    State(state): State<ApiState>,
+    Json(body): Json<SetQualityRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    let quality = body.quality.trim().to_string();
+    if !matches!(quality.as_str(), "mp3" | "aac" | "wav") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            ApiError::new("quality must be one of: mp3, aac, wav"),
+        ));
+    }
+
+    {
+        let mut s = state.app.state.write().await;
+        s.config.stream_quality = quality.clone();
+        s.config.save();
+    }
+
+    tracing::info!("Stream quality set to: {}", quality);
+    Ok(Json(serde_json::json!({ "ok": true, "quality": quality })))
 }
 
 /// Stream live audio from the PipeWire/PulseAudio default sink to the browser.
 ///
-/// Tries two strategies in order:
-///   1. `parec | ffmpeg` shell pipeline — captures from the sink monitor and
-///      encodes to MP3 128 kbps (works in all browsers incl. Safari).
-///   2. `parec` raw PCM wrapped in a streaming WAV header — no ffmpeg needed,
-///      universally supported by browsers.
+/// Quality is selected via the `?quality=` query parameter (mp3 | aac | wav).
+/// If omitted, the value stored in config is used.  Each quality falls back to
+/// the WAV path if ffmpeg is unavailable.
 ///
-/// Both strategies capture from `@DEFAULT_MONITOR@` (the sink monitor) rather
-/// than the default source (microphone), matching the spectrum analyser capture.
-async fn get_audio_stream() -> impl axum::response::IntoResponse {
-    // ── Strategy 1: parec | ffmpeg shell pipeline ─────────────────────────────
-    let sh_child = tokio::process::Command::new("sh")
-        .args([
-            "-c",
-            // --latency-msec=50 keeps the parec ring-buffer small so the first
-            // audio reaches the browser faster.  ffmpeg's -fflags +nobuffer and
-            // -flush_packets 1 prevent ffmpeg from holding encoded frames in its
-            // own output buffer, giving a more responsive start-up and seek.
-            "parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
-             | ffmpeg -hide_banner -loglevel quiet \
-                      -fflags +nobuffer \
-                      -f s16le -ar 44100 -ac 2 -i pipe:0 \
-                      -acodec libmp3lame -b:a 128k -f mp3 -flush_packets 1 pipe:1",
-        ])
+/// All strategies capture from `@DEFAULT_MONITOR@` (the sink monitor) so they
+/// match the spectrum analyser capture path.
+async fn get_audio_stream(
+    State(state): State<ApiState>,
+    Query(params): Query<StreamQueryParams>,
+) -> impl axum::response::IntoResponse {
+    // Resolve quality: per-request param overrides stored config.
+    let (quality, aac_encoder) = {
+        let s = state.app.state.read().await;
+        let q = params
+            .quality
+            .clone()
+            .filter(|q| matches!(q.as_str(), "mp3" | "aac" | "wav"))
+            .unwrap_or_else(|| s.config.stream_quality.clone());
+        let enc = s.config.aac_encoder.clone();
+        (q, enc)
+    };
+
+    match quality.as_str() {
+        "aac" => {
+            // AAC 192 kbps via ADTS container — streamable, no seeking required.
+            // Safari and Chrome both decode audio/aac ADTS streams natively.
+            let cmd = format!(
+                "parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
+                 | ffmpeg -hide_banner -loglevel quiet \
+                          -fflags +nobuffer \
+                          -f s16le -ar 44100 -ac 2 -i pipe:0 \
+                          -acodec {} -b:a 192k -f adts -flush_packets 1 pipe:1",
+                aac_encoder
+            );
+            if let Some(resp) = try_ffmpeg_stream(cmd, "audio/aac").await {
+                tracing::info!("Audio stream: AAC 192k ({}) pipeline started", aac_encoder);
+                return resp;
+            }
+            tracing::warn!("Audio stream: AAC ffmpeg pipeline failed, falling back to WAV");
+            wav_stream_response().await
+        }
+        "wav" => {
+            // Lossless PCM — highest quality, fine on LAN (~1.4 Mbps).
+            tracing::info!("Audio stream: lossless WAV requested");
+            wav_stream_response().await
+        }
+        _ => {
+            // MP3 128 kbps — default, universally supported.
+            let cmd = "parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
+                       | ffmpeg -hide_banner -loglevel quiet \
+                                -fflags +nobuffer \
+                                -f s16le -ar 44100 -ac 2 -i pipe:0 \
+                                -acodec libmp3lame -b:a 128k -f mp3 -flush_packets 1 pipe:1"
+                .to_string();
+            if let Some(resp) = try_ffmpeg_stream(cmd, "audio/mpeg").await {
+                tracing::info!("Audio stream: MP3 128k pipeline started");
+                return resp;
+            }
+            tracing::warn!("Audio stream: MP3 ffmpeg pipeline failed, falling back to WAV");
+            wav_stream_response().await
+        }
+    }
+}
+
+/// Attempt to start a `sh -c <cmd>` pipeline and return a streaming response.
+/// Returns `None` if the process could not be spawned or produced no stdout.
+async fn try_ffmpeg_stream(cmd: String, content_type: &'static str) -> Option<axum::response::Response> {
+    let mut child = tokio::process::Command::new("sh")
+        .args(["-c", &cmd])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .spawn();
+        .spawn()
+        .ok()?;
 
-    if let Ok(mut child) = sh_child {
-        if let Some(stdout) = child.stdout.take() {
-            tracing::info!("Audio stream: parec|ffmpeg MP3 pipeline started");
-            return compressed_stream_response(stdout, child, "audio/mpeg");
-        }
-        let _ = child.kill().await;
-    }
+    let stdout = child.stdout.take()?;
+    Some(compressed_stream_response(stdout, child, content_type))
+}
 
-    // ── Strategy 2: parec → streaming WAV (no ffmpeg required) ───────────────
-    // Stereo 44100 Hz 16-bit signed-LE PCM wrapped in a WAV container whose
-    // data-chunk size field is set to 0xFFFF_FFFE so browsers stream forever.
+/// Build a streaming WAV response from a fresh `parec` process.
+///
+/// Uses a streaming WAV header with data-chunk size 0xFFFF_FFFE so the browser
+/// never considers the download complete.
+async fn wav_stream_response() -> axum::response::Response {
     let parec = tokio::process::Command::new("parec")
         .args([
             "--device=@DEFAULT_MONITOR@",
@@ -556,11 +671,9 @@ async fn get_audio_stream() -> impl axum::response::IntoResponse {
                 }
             };
 
-            tracing::info!("Audio stream: parec WAV fallback started");
+            tracing::info!("Audio stream: parec WAV started");
 
-            // Build a minimal 44-byte WAV header for streaming:
-            // - RIFF chunk size and data chunk size both set to max (0xFFFF_FFFE)
-            //   so the browser never thinks the file is complete.
+            // Minimal 44-byte WAV header for endless streaming.
             const CHANNELS: u16 = 2;
             const SAMPLE_RATE: u32 = 44_100;
             const BITS: u16 = 16;
@@ -583,7 +696,6 @@ async fn get_audio_stream() -> impl axum::response::IntoResponse {
             wav_header.extend_from_slice(b"data");
             wav_header.extend_from_slice(&data_size.to_le_bytes());
 
-            // Stream: header first, then continuous raw PCM from parec.
             let header_chunk = Ok::<Vec<u8>, std::io::Error>(wav_header);
             let pcm_stream = stream::unfold((stdout, child), |(mut reader, mut proc)| async move {
                 let mut buf = vec![0u8; 8192];

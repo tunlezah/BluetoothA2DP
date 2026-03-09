@@ -38,7 +38,7 @@ header()  { echo -e "\n${BLD}${CYN}══ $* ══${RST}"; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 APP_NAME="soundsync"
-APP_VERSION="0.1.0"
+APP_VERSION="1.2.0"
 INSTALL_USER="${USER:-$(whoami)}"
 INSTALL_BIN="${HOME}/.local/bin"
 CONFIG_DIR="${HOME}/.config/soundsync"
@@ -265,6 +265,10 @@ install_system_packages() {
         "clang"
         "libclang-dev"
         "curl"
+
+        # Audio capture and encoding
+        "ffmpeg"
+        "pulseaudio-utils"    # provides parec
 
         # Python (for bluetoothctl helper)
         "python3"
@@ -508,6 +512,31 @@ install_binary() {
     info "Version: $(${INSTALL_BIN}/soundsync --version 2>/dev/null || echo 'v0.1.0')"
 }
 
+# ── Detect FFmpeg AAC encoder ─────────────────────────────────────────────────
+# Sets AAC_ENCODER to "libfdk_aac" if that encoder is compiled into the
+# installed ffmpeg, otherwise falls back to the built-in "aac" encoder.
+# libfdk_aac is higher quality but only available in non-free ffmpeg builds.
+detect_aac_encoder() {
+    header "Detecting FFmpeg AAC encoder"
+
+    AAC_ENCODER="aac"   # safe default
+
+    if ! command -v ffmpeg &>/dev/null; then
+        warn "ffmpeg not found — AAC streaming will use fallback encoder when installed"
+        return
+    fi
+
+    if ffmpeg -codecs 2>/dev/null | grep -q "libfdk_aac"; then
+        AAC_ENCODER="libfdk_aac"
+        success "libfdk_aac encoder detected — high-quality AAC enabled"
+    else
+        AAC_ENCODER="aac"
+        info "Using FFmpeg built-in AAC encoder"
+        info "For higher quality AAC, install an ffmpeg build with libfdk_aac:"
+        info "  e.g. from the 'jellyfin-ffmpeg' or 'deb-multimedia' repository"
+    fi
+}
+
 # ── Write configuration ───────────────────────────────────────────────────────
 write_config() {
     header "Writing configuration"
@@ -534,10 +563,32 @@ auto_pair = true
 
 # Maximum number of simultaneously connected devices
 max_devices = 1
+
+# AAC encoder: libfdk_aac (best quality, requires non-free ffmpeg build)
+#              or aac (FFmpeg built-in, always available)
+# Detected automatically at install time — change if you switch ffmpeg builds.
+aac_encoder = "${AAC_ENCODER}"
+
+# Default browser stream quality: mp3 | aac | wav
+# mp3 — MP3 128 kbps, universal browser support
+# aac — AAC 192 kbps, higher quality, Safari & Chrome (recommended for LAN)
+# wav — Lossless PCM ~1.4 Mbps, highest quality, LAN only
+stream_quality = "mp3"
 TOMLEOF
         success "Configuration written: ${CONFIG_DIR}/config.toml"
     else
-        success "Configuration already exists (preserving): ${CONFIG_DIR}/config.toml"
+        # Existing config: add new keys if they are absent (non-destructive upgrade).
+        if ! grep -q "^aac_encoder" "${CONFIG_DIR}/config.toml"; then
+            info "Adding aac_encoder to existing config..."
+            echo "" >> "${CONFIG_DIR}/config.toml"
+            echo "# AAC encoder detected by installer (${AAC_ENCODER})" >> "${CONFIG_DIR}/config.toml"
+            echo "aac_encoder = \"${AAC_ENCODER}\"" >> "${CONFIG_DIR}/config.toml"
+        fi
+        if ! grep -q "^stream_quality" "${CONFIG_DIR}/config.toml"; then
+            info "Adding stream_quality to existing config..."
+            echo "stream_quality = \"mp3\"" >> "${CONFIG_DIR}/config.toml"
+        fi
+        success "Configuration already exists (updated with new keys): ${CONFIG_DIR}/config.toml"
     fi
 
     # Create log directory
@@ -729,6 +780,7 @@ main() {
     enable_linger
     build_binary
     install_binary
+    detect_aac_encoder
     write_config
     install_service
     configure_firewall
