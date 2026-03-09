@@ -111,27 +111,29 @@ pub async fn run_avrcp_monitor(state: AppStateHandle) {
             let dev_seg = addr.replace(':', "_");
             let player_path = format!("/org/bluez/{}/dev_{}/player0", adapter_name, dev_seg);
 
-            // builder() returns ProxyBuilder directly; .path() returns Result<ProxyBuilder>.
-            let build_result = async {
-                MediaPlayer1Proxy::builder(&connection)
-                    .path(player_path.as_str())?
-                    .build()
-                    .await
-            }
-            .await;
-
-            cached_addr = Some(addr.clone()); // always mark that we tried this addr
-            cached_proxy = match build_result {
-                Ok(p) => {
-                    tracing::debug!(addr = %addr, "AVRCP proxy built for device");
-                    Some(p)
-                }
+            // builder() returns ProxyBuilder directly; .path() consumes the
+            // string immediately (no borrow held after the call), so we can
+            // safely await .build() without an async capture of player_path.
+            cached_addr = Some(addr.clone());
+            cached_proxy = match MediaPlayer1Proxy::builder(&connection)
+                .path(player_path.as_str())
+            {
+                Ok(builder) => match builder.build().await {
+                    Ok(p) => {
+                        tracing::debug!(addr = %addr, "AVRCP proxy built for device");
+                        Some(p)
+                    }
+                    Err(_) => None,
+                },
                 Err(_) => None, // device doesn't support AVRCP
             };
         }
 
-        let Some(proxy) = cached_proxy.as_ref() else {
-            continue; // No AVRCP support for this device
+        // Clone the proxy so cached_proxy is not borrowed while we poll it —
+        // zbus proxies are Arc-backed so this is a pointer copy, not a deep clone.
+        let proxy = match cached_proxy.clone() {
+            Some(p) => p,
+            None => continue,
         };
 
         // Read playback status
@@ -141,7 +143,7 @@ pub async fn run_avrcp_monitor(state: AppStateHandle) {
                 // Proxy went stale — force rebuild next iteration
                 cached_addr = None;
                 cached_proxy = None;
-                PlaybackStatus::Unknown
+                continue;
             }
         };
 
