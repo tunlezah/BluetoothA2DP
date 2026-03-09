@@ -42,6 +42,17 @@
   --grid-line:              rgba(255, 255, 255, 0.05);
   --idle-bar:               rgba(255, 255, 255, 0.08);
 
+  /* Component-specific tokens */
+  --stat-row-bg:        rgba(255, 255, 255, 0.04);
+  --stat-row-border:    rgba(255, 255, 255, 0.06);
+  --volume-track:       rgba(255, 255, 255, 0.18);
+  --device-state-bg:    rgba(255, 255, 255, 0.08);
+  --card-hover-border:  rgba(255, 255, 255, 0.25);
+  --input-bg:           rgba(255, 255, 255, 0.06);
+  --db-label-color:     rgba(255, 255, 255, 0.30);
+  --toast-bg:           rgba(20, 20, 40, 0.95);
+  --tooltip-bg:         rgba(20, 20, 40, 0.95);
+
   --anim: 140ms ease;
   color-scheme: dark;
 }
@@ -53,7 +64,7 @@
 
   --glass-bg:         rgba(255, 255, 255, 0.78);
   --glass-bg-hover:   rgba(255, 255, 255, 0.95);
-  --glass-border:     rgba(0, 0, 0, 0.10);
+  --glass-border:     rgba(0, 0, 0, 0.12);
   --glass-shadow:     0 8px 32px rgba(0, 0, 0, 0.10);
 
   --text:       #1a1a2e;
@@ -63,7 +74,18 @@
   --spectrum-canvas-bg:     rgba(255, 255, 255, 0.35);
   --spectrum-canvas-border: rgba(0, 0, 0, 0.08);
   --grid-line:              rgba(0, 0, 0, 0.04);
-  --idle-bar:               rgba(0, 0, 0, 0.08);
+  --idle-bar:               rgba(0, 0, 0, 0.12);
+
+  /* Component-specific tokens — light-mode overrides */
+  --stat-row-bg:        rgba(0, 0, 0, 0.04);
+  --stat-row-border:    rgba(0, 0, 0, 0.08);
+  --volume-track:       rgba(0, 0, 0, 0.15);
+  --device-state-bg:    rgba(0, 0, 0, 0.06);
+  --card-hover-border:  rgba(0, 0, 0, 0.20);
+  --input-bg:           rgba(0, 0, 0, 0.05);
+  --db-label-color:     rgba(0, 0, 0, 0.30);
+  --toast-bg:           rgba(240, 242, 250, 0.97);
+  --tooltip-bg:         rgba(30, 30, 60, 0.92);
 
   color-scheme: light;
 }
@@ -76,7 +98,7 @@
 
     --glass-bg:         rgba(255, 255, 255, 0.78);
     --glass-bg-hover:   rgba(255, 255, 255, 0.95);
-    --glass-border:     rgba(0, 0, 0, 0.10);
+    --glass-border:     rgba(0, 0, 0, 0.12);
     --glass-shadow:     0 8px 32px rgba(0, 0, 0, 0.10);
 
     --text:       #1a1a2e;
@@ -86,7 +108,17 @@
     --spectrum-canvas-bg:     rgba(255, 255, 255, 0.35);
     --spectrum-canvas-border: rgba(0, 0, 0, 0.08);
     --grid-line:              rgba(0, 0, 0, 0.04);
-    --idle-bar:               rgba(0, 0, 0, 0.08);
+    --idle-bar:               rgba(0, 0, 0, 0.12);
+
+    --stat-row-bg:        rgba(0, 0, 0, 0.04);
+    --stat-row-border:    rgba(0, 0, 0, 0.08);
+    --volume-track:       rgba(0, 0, 0, 0.15);
+    --device-state-bg:    rgba(0, 0, 0, 0.06);
+    --card-hover-border:  rgba(0, 0, 0, 0.20);
+    --input-bg:           rgba(0, 0, 0, 0.05);
+    --db-label-color:     rgba(0, 0, 0, 0.30);
+    --toast-bg:           rgba(240, 242, 250, 0.97);
+    --tooltip-bg:         rgba(30, 30, 60, 0.92);
 
     color-scheme: light;
   }
@@ -117,7 +149,7 @@ html, body {
 
 .glass:hover {
   background: var(--glass-bg-hover);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255,255,255,0.1);
+  box-shadow: var(--glass-shadow);
 }
 
 /* ── Background gradient ─────────────────────────────────────────────────── */
@@ -205,6 +237,22 @@ body::before {
   color: var(--text-dim);
   letter-spacing: 0.5px;
   text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.app-version {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(29, 184, 192, 0.15);
+  color: var(--teal);
+  border: 1px solid rgba(29, 184, 192, 0.25);
+  text-transform: none;
+  vertical-align: middle;
 }
 
 .status-pill {
@@ -321,7 +369,7 @@ body::before {
 
 .device-card:hover {
   background: var(--glass-bg-hover);
-  border-color: rgba(255,255,255,0.25);
+  border-color: var(--card-hover-border);
 }
 
 .device-card.connected {
@@ -359,7 +407,7 @@ body::before {
   font-size: 10px;
   padding: 1px 6px;
   border-radius: 6px;
-  background: rgba(255,255,255,0.08);
+  background: var(--device-state-bg);
   color: var(--text-dim);
 }
 
@@ -525,7 +573,7 @@ body::before {
 
 .spectrum-db-scale span {
   font-size: 9px;
-  color: rgba(255,255,255,0.25);
+  color: var(--db-label-color);
   line-height: 1;
 }
 
@@ -669,8 +717,8 @@ body::before {
   align-items: center;
   padding: 6px 10px;
   border-radius: 10px;
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.06);
+  background: var(--stat-row-bg);
+  border: 1px solid var(--stat-row-border);
 }
 
 .stat-label  { font-size: 11px; color: var(--text-dim); }
@@ -693,7 +741,7 @@ body::before {
   flex: 1;
   height: 4px;
   border-radius: 2px;
-  background: rgba(255,255,255,0.12);
+  background: var(--volume-track);
   outline: none;
   cursor: pointer;
 }
@@ -768,7 +816,7 @@ body::before {
 .settings-label       { font-size: 12px; color: var(--text-dim); }
 
 .settings-input {
-  background: rgba(255,255,255,0.06);
+  background: var(--input-bg);
   border: 1px solid var(--glass-border);
   border-radius: 8px;
   color: var(--text);
@@ -865,7 +913,7 @@ body::before {
   bottom: calc(100% + 6px);
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(20, 20, 40, 0.95);
+  background: var(--tooltip-bg);
   border: 1px solid var(--glass-border);
   border-radius: 6px;
   padding: 4px 8px;
@@ -929,7 +977,7 @@ body::before {
 .toast {
   padding: 10px 16px;
   border-radius: 12px;
-  background: rgba(20, 20, 40, 0.95);
+  background: var(--toast-bg);
   border: 1px solid var(--glass-border);
   backdrop-filter: blur(20px);
   font-size: 12px;
