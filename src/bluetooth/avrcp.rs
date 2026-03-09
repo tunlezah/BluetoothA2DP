@@ -115,8 +115,7 @@ pub async fn run_avrcp_monitor(state: AppStateHandle) {
             // string immediately (no borrow held after the call), so we can
             // safely await .build() without an async capture of player_path.
             cached_addr = Some(addr.clone());
-            cached_proxy = match MediaPlayer1Proxy::builder(&connection)
-                .path(player_path.as_str())
+            cached_proxy = match MediaPlayer1Proxy::builder(&connection).path(player_path.as_str())
             {
                 Ok(builder) => match builder.build().await {
                     Ok(p) => {
