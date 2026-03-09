@@ -60,7 +60,7 @@ pub async fn run_avrcp_monitor(state: AppStateHandle) {
 
     // Cached proxy — rebuilt only when the active device address changes.
     let mut cached_addr: Option<String> = None;
-    let mut cached_proxy: Option<MediaPlayer1Proxy<'static>> = None;
+    let mut cached_proxy: Option<MediaPlayer1Proxy<'_>> = None;
 
     loop {
         interval.tick().await;
@@ -111,28 +111,22 @@ pub async fn run_avrcp_monitor(state: AppStateHandle) {
             let dev_seg = addr.replace(':', "_");
             let player_path = format!("/org/bluez/{}/dev_{}/player0", adapter_name, dev_seg);
 
-            let new_proxy = MediaPlayer1Proxy::builder(&connection)
-                .ok()
-                .and_then(|b| b.path(player_path.as_str()).ok())
-                .map(|b| async move { b.build().await });
+            // builder() returns ProxyBuilder directly; .path() returns Result<ProxyBuilder>.
+            let build_result = async {
+                MediaPlayer1Proxy::builder(&connection)
+                    .path(player_path.as_str())?
+                    .build()
+                    .await
+            }
+            .await;
 
-            cached_proxy = match new_proxy {
-                Some(fut) => match fut.await {
-                    Ok(p) => {
-                        tracing::debug!(addr = %addr, "AVRCP proxy built for device");
-                        cached_addr = Some(addr.clone());
-                        Some(p)
-                    }
-                    Err(_) => {
-                        // Device doesn't support AVRCP
-                        cached_addr = Some(addr.clone()); // remember we tried
-                        None
-                    }
-                },
-                None => {
-                    cached_addr = Some(addr.clone());
-                    None
+            cached_addr = Some(addr.clone()); // always mark that we tried this addr
+            cached_proxy = match build_result {
+                Ok(p) => {
+                    tracing::debug!(addr = %addr, "AVRCP proxy built for device");
+                    Some(p)
                 }
+                Err(_) => None, // device doesn't support AVRCP
             };
         }
 
