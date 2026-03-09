@@ -205,6 +205,22 @@ pub struct Config {
     pub device_name: String,
     pub auto_pair: bool,
     pub max_devices: u32,
+    /// AAC encoder to use: "libfdk_aac" (higher quality) or "aac" (built-in fallback).
+    /// Detected at install time by the installer.
+    #[serde(default = "Config::default_aac_encoder")]
+    pub aac_encoder: String,
+    /// Default browser stream quality: "mp3" | "aac" | "wav"
+    #[serde(default = "Config::default_stream_quality")]
+    pub stream_quality: String,
+}
+
+impl Config {
+    fn default_aac_encoder() -> String {
+        "aac".to_string()
+    }
+    fn default_stream_quality() -> String {
+        "mp3".to_string()
+    }
 }
 
 impl Default for Config {
@@ -215,6 +231,8 @@ impl Default for Config {
             device_name: "SoundSync".to_string(),
             auto_pair: true,
             max_devices: 1,
+            aac_encoder: "aac".to_string(),
+            stream_quality: "mp3".to_string(),
         }
     }
 }

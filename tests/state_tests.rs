@@ -9,6 +9,7 @@ fn test_config() -> Config {
         device_name: "TestSync".to_string(),
         auto_pair: true,
         max_devices: 1,
+        ..Config::default()
     }
 }
 

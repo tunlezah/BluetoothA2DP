@@ -31,7 +31,7 @@
         </div>
         <div class="app-title">
           <div class="app-name">SoundSync</div>
-          <div class="app-subtitle">Bluetooth Audio &nbsp;<span class="app-version">v1.1.2</span></div>
+          <div class="app-subtitle">Bluetooth Audio &nbsp;<span class="app-version">v1.2.0</span></div>
         </div>
         <!-- Connection status pill -->
         <div id="status-pill" class="status-pill" data-status="unavailable" aria-label="Bluetooth status">
@@ -195,6 +195,20 @@
                   onclick="SoundSync.toggleBrowserAudio()">Listen</button>
         </div>
 
+        <!-- Stream quality selector -->
+        <div class="stat-row" style="margin-top:8px;margin-bottom:4px">
+          <label class="stat-label" for="quality-select">Quality</label>
+          <select id="quality-select"
+                  class="settings-input"
+                  style="width:auto;height:24px;padding:1px 6px;font-size:11px;cursor:pointer"
+                  aria-label="Stream output quality"
+                  onchange="SoundSync.setStreamQuality(this.value)">
+            <option value="mp3">MP3 128k</option>
+            <option value="aac">AAC 192k</option>
+            <option value="wav">Lossless WAV</option>
+          </select>
+        </div>
+
         <!-- Stream stats -->
         <div class="stream-stats">
           <div class="stat-row">
@@ -287,7 +301,7 @@
           </div>
           <div class="settings-row">
             <span class="settings-label">Version</span>
-            <span class="stat-value" style="font-size:11px">v0.1.0</span>
+            <span class="stat-value" style="font-size:11px">v1.2.0</span>
           </div>
           <button class="settings-btn" id="btn-refresh" onclick="SoundSync.refresh()">Refresh Status</button>
         </div>
