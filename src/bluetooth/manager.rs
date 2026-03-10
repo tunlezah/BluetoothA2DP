@@ -84,6 +84,10 @@ trait Adapter1 {
     #[zbus(property)]
     fn set_discoverable(&self, value: bool) -> zbus::Result<()>;
     #[zbus(property)]
+    fn discoverable_timeout(&self) -> zbus::Result<u32>;
+    #[zbus(property)]
+    fn set_discoverable_timeout(&self, value: u32) -> zbus::Result<()>;
+    #[zbus(property)]
     fn pairable(&self) -> zbus::Result<bool>;
     #[zbus(property)]
     fn set_pairable(&self, value: bool) -> zbus::Result<()>;
@@ -266,6 +270,9 @@ impl BluetoothManager {
         };
         let _ = adapter.set_alias(&device_name).await;
         let _ = adapter.set_discoverable(true).await;
+        // Set timeout to 0 so the adapter stays discoverable permanently.
+        // BlueZ defaults to 180 s, after which headless devices can no longer find us.
+        let _ = adapter.set_discoverable_timeout(0).await;
         let _ = adapter.set_pairable(true).await;
 
         let addr = adapter.address().await.unwrap_or_default();
@@ -664,7 +671,15 @@ impl BluetoothManager {
                                     // Trust the device so it auto-reconnects
                                     let _ = device.set_trusted(true).await;
 
-                                    match device.connect().await {
+                                    // Re-open the pairing window for this connect attempt.
+                                    // The scan may have already timed out (PAIRING_ALLOWED=false),
+                                    // which would cause the agent to reject the pairing handshake
+                                    // for headless devices that have no way to retry.
+                                    agent::set_pairing_allowed(true);
+                                    let result = device.connect().await;
+                                    agent::set_pairing_allowed(false);
+
+                                    match result {
                                         Ok(()) => {
                                             tracing::info!(addr = %addr_clone, "Device connected successfully");
                                         }
