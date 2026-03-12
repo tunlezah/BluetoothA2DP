@@ -9,6 +9,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Opt into Node.js 24 for all Actions runners ahead of the mandatory
+  # June 2026 cutoff (actions/checkout, actions/cache, actions/upload-artifact).
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   # ── Build & Test ────────────────────────────────────────────────────────────
