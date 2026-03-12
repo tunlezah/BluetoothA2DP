@@ -186,6 +186,8 @@ pub enum SystemEvent {
     SpectrumData { bands: Vec<f32> },
     /// System error occurred
     Error { message: String },
+    /// Service is about to shut down — clients should reconnect after a delay.
+    ServiceStopping,
     /// Full state snapshot (sent on WebSocket connect)
     StateSnapshot {
         status: String,

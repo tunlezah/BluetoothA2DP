@@ -188,15 +188,28 @@ fn generate_filter_chain_config(bands: &[EqBand]) -> String {
         "eq_12khz", "eq_16khz",
     ];
 
+    // Per-band Q values matching crate::dsp::eq::EQ_BAND_Q.
+    let band_q: [f64; 10] = [
+        0.707, 1.414, 1.414, 1.414, 1.414, 1.414, 1.414, 1.820, 2.870, 0.707,
+    ];
+
     let nodes: String = bands
         .iter()
         .enumerate()
         .map(|(i, band)| {
+            // Band 0 → low shelf, band 9 → high shelf, all others → peaking.
+            let label = match i {
+                0 => "bq_lowshelf",
+                9 => "bq_highshelf",
+                _ => "bq_peaking",
+            };
             format!(
-                "          {{ type = builtin  label = bq_peaking  name = {name}\n\
-                 \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20  control = {{ \"Freq\" = {freq}  \"Q\" = 1.41  \"Gain\" = {gain} }} }}\n",
+                "          {{ type = builtin  label = {label}  name = {name}\n\
+                 \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20  control = {{ \"Freq\" = {freq}  \"Q\" = {q:.3}  \"Gain\" = {gain} }} }}\n",
+                label = label,
                 name = band_names[i],
                 freq = band.freq,
+                q = band_q[i],
                 gain = band.gain_db,
             )
         })

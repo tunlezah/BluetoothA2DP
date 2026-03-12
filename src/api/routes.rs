@@ -19,7 +19,7 @@
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::Json,
     routing::{delete, get, post},
     Router,
@@ -488,6 +488,14 @@ async fn get_stream_info(State(state): State<ApiState>) -> Json<serde_json::Valu
             "label": format!("AAC 192k ({})", aac_encoder),
             "encoder": aac_encoder,
         })),
+        "heaac" => Json(serde_json::json!({
+            "codec": "aac",
+            "bitrate_kbps": 64,
+            "sample_rate": 44100,
+            "channels": 2,
+            "label": "HE-AAC 64k (libfdk_aac)",
+            "encoder": "libfdk_aac",
+        })),
         "wav" => Json(serde_json::json!({
             "codec": "pcm",
             "bitrate_kbps": 1411,
@@ -512,6 +520,7 @@ async fn get_stream_qualities(State(state): State<ApiState>) -> Json<serde_json:
     let aac_encoder = s.config.aac_encoder.clone();
     drop(s);
 
+    let heaac_available = aac_encoder == "libfdk_aac";
     Json(serde_json::json!({
         "qualities": [
             {
@@ -528,6 +537,15 @@ async fn get_stream_qualities(State(state): State<ApiState>) -> Json<serde_json:
                 "bitrate_kbps": 192,
                 "encoder": aac_encoder,
                 "description": "Higher quality · Safari & Chrome"
+            },
+            {
+                "id": "heaac",
+                "label": "HE-AAC 64k",
+                "codec": "aac",
+                "bitrate_kbps": 64,
+                "encoder": "libfdk_aac",
+                "available": heaac_available,
+                "description": "Efficient · requires libfdk_aac · Chrome & Safari"
             },
             {
                 "id": "wav",
@@ -547,10 +565,10 @@ async fn post_stream_quality(
     Json(body): Json<SetQualityRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
     let quality = body.quality.trim().to_string();
-    if !matches!(quality.as_str(), "mp3" | "aac" | "wav") {
+    if !matches!(quality.as_str(), "mp3" | "aac" | "heaac" | "wav") {
         return Err((
             StatusCode::BAD_REQUEST,
-            ApiError::new("quality must be one of: mp3, aac, wav"),
+            ApiError::new("quality must be one of: mp3, aac, heaac, wav"),
         ));
     }
 
@@ -566,29 +584,82 @@ async fn post_stream_quality(
 
 /// Stream live audio from the PipeWire/PulseAudio default sink to the browser.
 ///
-/// Quality is selected via the `?quality=` query parameter (mp3 | aac | wav).
-/// If omitted, the value stored in config is used.  Each quality falls back to
-/// the WAV path if ffmpeg is unavailable.
+/// Quality is selected via the `?quality=` query parameter (mp3 | aac | heaac | wav).
+/// If omitted, the server uses the stored config quality.  If the stored quality
+/// is also absent, the server performs Accept-header negotiation: it inspects the
+/// client's `Accept` header and selects the highest-quality codec the browser
+/// advertises (aac > mp3 > wav).  This replaces the need for unreliable
+/// client-side `canPlayType` detection.
 ///
 /// All strategies capture from `@DEFAULT_MONITOR@` (the sink monitor) so they
 /// match the spectrum analyser capture path.
 async fn get_audio_stream(
     State(state): State<ApiState>,
     Query(params): Query<StreamQueryParams>,
+    headers: HeaderMap,
 ) -> impl axum::response::IntoResponse {
-    // Resolve quality: per-request param overrides stored config.
+    // Resolve quality: per-request param > stored config > Accept-header negotiation.
     let (quality, aac_encoder) = {
         let s = state.app.state.read().await;
+        let config_quality = s.config.stream_quality.clone();
+        let enc = s.config.aac_encoder.clone();
         let q = params
             .quality
             .clone()
-            .filter(|q| matches!(q.as_str(), "mp3" | "aac" | "wav"))
-            .unwrap_or_else(|| s.config.stream_quality.clone());
-        let enc = s.config.aac_encoder.clone();
+            .filter(|q| matches!(q.as_str(), "mp3" | "aac" | "heaac" | "wav"))
+            .unwrap_or_else(|| {
+                // Fall back to Accept-header negotiation when no explicit quality
+                // is stored in config.  Browsers advertise their supported codecs,
+                // letting the server pick the best available option.
+                if config_quality.is_empty() || config_quality == "auto" {
+                    negotiate_quality_from_accept(&headers, &enc)
+                } else {
+                    config_quality
+                }
+            });
         (q, enc)
     };
 
     match quality.as_str() {
+        "heaac" => {
+            // HE-AAC (AAC with Spectral Band Replication) at 64 kbps.
+            // Requires libfdk_aac — produces equivalent perceptual quality to
+            // AAC-LC at 192 kbps while halving network bandwidth.  Falls back
+            // to standard AAC if libfdk_aac is not available.
+            if aac_encoder != "libfdk_aac" {
+                tracing::warn!(
+                    "Audio stream: HE-AAC requested but libfdk_aac not available \
+                     (encoder = {}) — falling back to AAC 192k",
+                    aac_encoder
+                );
+                // Recursive-style: fall through to standard AAC
+                let cmd = format!(
+                    "parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
+                     | ffmpeg -hide_banner -loglevel quiet \
+                              -fflags +nobuffer \
+                              -f s16le -ar 44100 -ac 2 -i pipe:0 \
+                              -acodec {} -b:a 192k -f adts -flush_packets 1 pipe:1",
+                    aac_encoder
+                );
+                if let Some(resp) = try_ffmpeg_stream(cmd, "audio/aac").await {
+                    return resp;
+                }
+                return wav_stream_response().await;
+            }
+            let cmd =
+                "parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
+                 | ffmpeg -hide_banner -loglevel quiet \
+                          -fflags +nobuffer \
+                          -f s16le -ar 44100 -ac 2 -i pipe:0 \
+                          -acodec libfdk_aac -profile:a aac_he -b:a 64k -f adts -flush_packets 1 pipe:1"
+                    .to_string();
+            if let Some(resp) = try_ffmpeg_stream(cmd, "audio/aac").await {
+                tracing::info!("Audio stream: HE-AAC 64k (libfdk_aac) pipeline started");
+                return resp;
+            }
+            tracing::warn!("Audio stream: HE-AAC pipeline failed, falling back to WAV");
+            wav_stream_response().await
+        }
         "aac" => {
             // AAC 192 kbps via ADTS container — streamable, no seeking required.
             // Safari and Chrome both decode audio/aac ADTS streams natively.
@@ -640,6 +711,7 @@ async fn try_ffmpeg_stream(
         .args(["-c", &cmd])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
         .spawn()
         .ok()?;
 
@@ -662,11 +734,12 @@ async fn wav_stream_response() -> axum::response::Response {
         ])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
         .spawn();
 
     match parec {
         Ok(mut child) => {
-            let stdout = match child.stdout.take() {
+            let mut stdout = match child.stdout.take() {
                 Some(s) => s,
                 None => {
                     let _ = child.kill().await;
@@ -675,6 +748,29 @@ async fn wav_stream_response() -> axum::response::Response {
             };
 
             tracing::info!("Audio stream: parec WAV started");
+
+            // Pre-roll buffer: collect ~250 ms of PCM before sending the first
+            // byte to the browser.  This gives the player enough data to fill
+            // its decode buffer, preventing stutter on WiFi with bursty loss.
+            // 250 ms @ 44100 Hz, 2 ch, 16-bit = 44100 bytes.
+            const PRE_ROLL_BYTES: usize = 44_100;
+            let pre_roll = {
+                let mut buf = vec![0u8; PRE_ROLL_BYTES];
+                let mut filled = 0usize;
+                // Parec always produces data (silence when idle), so this
+                // completes quickly.  A 3-second timeout guards against hangs.
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                    while filled < PRE_ROLL_BYTES {
+                        match stdout.read(&mut buf[filled..]).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => filled += n,
+                        }
+                    }
+                })
+                .await;
+                buf.truncate(filled);
+                buf
+            };
 
             // Minimal 44-byte WAV header for endless streaming.
             const CHANNELS: u16 = 2;
@@ -700,6 +796,7 @@ async fn wav_stream_response() -> axum::response::Response {
             wav_header.extend_from_slice(&data_size.to_le_bytes());
 
             let header_chunk = Ok::<Vec<u8>, std::io::Error>(wav_header);
+            let pre_roll_chunk = Ok::<Vec<u8>, std::io::Error>(pre_roll);
             let pcm_stream = stream::unfold((stdout, child), |(mut reader, mut proc)| async move {
                 let mut buf = vec![0u8; 8192];
                 match reader.read(&mut buf).await {
@@ -714,7 +811,9 @@ async fn wav_stream_response() -> axum::response::Response {
                 }
             });
 
-            let body_stream = stream::once(async move { header_chunk }).chain(pcm_stream);
+            let body_stream = stream::once(async move { header_chunk })
+                .chain(stream::once(async move { pre_roll_chunk }))
+                .chain(pcm_stream);
 
             axum::response::Response::builder()
                 .status(StatusCode::OK)
@@ -756,6 +855,33 @@ fn compressed_stream_response(
         .header("Cache-Control", "no-cache, no-store")
         .body(axum::body::Body::from_stream(audio_stream))
         .unwrap()
+}
+
+/// Select the best quality the browser supports based on its Accept header.
+///
+/// Browsers typically include `audio/aac`, `audio/mpeg`, etc. in their Accept
+/// header when opening an `<audio>` src.  Prefer AAC > MP3 > WAV, matching the
+/// quality order.  If `libfdk_aac` is available, HE-AAC is also eligible.
+fn negotiate_quality_from_accept(headers: &HeaderMap, aac_encoder: &str) -> String {
+    let accept = headers
+        .get("accept")
+        .or_else(|| headers.get("Accept"))
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    if accept.contains("audio/aac") || accept.contains("audio/mp4") {
+        if aac_encoder == "libfdk_aac" && accept.contains("audio/aac") {
+            // libfdk_aac available — offer HE-AAC as the best option
+            return "heaac".to_string();
+        }
+        return "aac".to_string();
+    }
+    if accept.contains("audio/mpeg") || accept.contains("audio/mp3") {
+        return "mp3".to_string();
+    }
+    // Default to MP3 — universal browser support
+    "mp3".to_string()
 }
 
 fn error_response(status: StatusCode) -> axum::response::Response {

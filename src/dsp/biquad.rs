@@ -35,6 +35,69 @@ impl BiquadCoeffs {
         }
     }
 
+    /// Compute a low-shelf biquad (Audio EQ Cookbook, S = 1 max slope).
+    ///
+    /// Boosts or cuts all frequencies below `freq_hz`. Used for the 60 Hz band.
+    pub fn low_shelf(freq_hz: f64, gain_db: f64, sample_rate: f64) -> Self {
+        let gain_db = gain_db.clamp(-12.0, 12.0);
+        if gain_db.abs() < 0.01 {
+            return Self::identity();
+        }
+
+        let a = 10f64.powf(gain_db / 40.0);
+        let w0 = 2.0 * PI * freq_hz / sample_rate;
+        // alpha for S=1: sin(w0)/2 * sqrt(2) (shelf slope = maximum)
+        let alpha = sin(w0) / 2.0 * 2f64.sqrt();
+        let cos_w0 = cos(w0);
+        let sqrt_a = a.sqrt();
+
+        let b0 = a * ((a + 1.0) - (a - 1.0) * cos_w0 + 2.0 * sqrt_a * alpha);
+        let b1 = 2.0 * a * ((a - 1.0) - (a + 1.0) * cos_w0);
+        let b2 = a * ((a + 1.0) - (a - 1.0) * cos_w0 - 2.0 * sqrt_a * alpha);
+        let a0 = (a + 1.0) + (a - 1.0) * cos_w0 + 2.0 * sqrt_a * alpha;
+        let a1 = -2.0 * ((a - 1.0) + (a + 1.0) * cos_w0);
+        let a2 = (a + 1.0) + (a - 1.0) * cos_w0 - 2.0 * sqrt_a * alpha;
+
+        Self {
+            b0: (b0 / a0) as f32,
+            b1: (b1 / a0) as f32,
+            b2: (b2 / a0) as f32,
+            a1: (a1 / a0) as f32,
+            a2: (a2 / a0) as f32,
+        }
+    }
+
+    /// Compute a high-shelf biquad (Audio EQ Cookbook, S = 1 max slope).
+    ///
+    /// Boosts or cuts all frequencies above `freq_hz`. Used for the 16 kHz band.
+    pub fn high_shelf(freq_hz: f64, gain_db: f64, sample_rate: f64) -> Self {
+        let gain_db = gain_db.clamp(-12.0, 12.0);
+        if gain_db.abs() < 0.01 {
+            return Self::identity();
+        }
+
+        let a = 10f64.powf(gain_db / 40.0);
+        let w0 = 2.0 * PI * freq_hz / sample_rate;
+        let alpha = sin(w0) / 2.0 * 2f64.sqrt();
+        let cos_w0 = cos(w0);
+        let sqrt_a = a.sqrt();
+
+        let b0 = a * ((a + 1.0) + (a - 1.0) * cos_w0 + 2.0 * sqrt_a * alpha);
+        let b1 = -2.0 * a * ((a - 1.0) + (a + 1.0) * cos_w0);
+        let b2 = a * ((a + 1.0) + (a - 1.0) * cos_w0 - 2.0 * sqrt_a * alpha);
+        let a0 = (a + 1.0) - (a - 1.0) * cos_w0 + 2.0 * sqrt_a * alpha;
+        let a1 = 2.0 * ((a - 1.0) - (a + 1.0) * cos_w0);
+        let a2 = (a + 1.0) - (a - 1.0) * cos_w0 - 2.0 * sqrt_a * alpha;
+
+        Self {
+            b0: (b0 / a0) as f32,
+            b1: (b1 / a0) as f32,
+            b2: (b2 / a0) as f32,
+            a1: (a1 / a0) as f32,
+            a2: (a2 / a0) as f32,
+        }
+    }
+
     /// Compute peaking EQ biquad coefficients.
     ///
     /// # Arguments
