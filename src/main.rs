@@ -171,7 +171,7 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("Failed to bind to port {}", port))?;
 
     axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal_notify(state.clone()))
         .await
         .context("Web server error")?;
 
@@ -223,6 +223,16 @@ fn ensure_capture_sink() {
             );
         }
     }
+}
+
+/// Wait for shutdown signal, broadcast `ServiceStopping` to WebSocket clients,
+/// then allow axum's graceful shutdown to proceed.
+async fn shutdown_signal_notify(state: AppStateHandle) {
+    shutdown_signal().await;
+    tracing::info!("Broadcasting ServiceStopping to WebSocket clients...");
+    state.broadcast(crate::state::SystemEvent::ServiceStopping);
+    // Small delay so the broadcast can be sent before connections close.
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 }
 
 /// Wait for Ctrl+C or SIGTERM to initiate graceful shutdown.

@@ -399,11 +399,23 @@ bluez_monitor.properties = {
   ["bluez5.enable-sbc-xq"]    = true,
   ["bluez5.enable-msbc"]      = true,
   ["bluez5.enable-hw-volume"] = true,
-  ["bluez5.codecs"]           = "[ sbc sbc_xq aac ldac aptx aptx_hd ]",
+  -- sbc_xq listed first so WirePlumber negotiates it before falling back to sbc
+  ["bluez5.codecs"]           = "[ sbc_xq sbc aac ldac aptx aptx_hd ]",
   ["bluez5.roles"]            = "[ a2dp_sink hsp_hs hfp_hf ]",
 }
 LUAEOF
         success "WirePlumber A2DP configuration written"
+
+        # Restart WirePlumber so it picks up the new config immediately.
+        # Failure is non-fatal — the config will be loaded on next login.
+        if systemctl --user is-active --quiet wireplumber 2>/dev/null; then
+            info "Restarting WirePlumber to apply Bluetooth codec configuration..."
+            if systemctl --user restart wireplumber 2>/dev/null; then
+                success "WirePlumber restarted"
+            else
+                warn "WirePlumber restart failed — codec config will apply on next login"
+            fi
+        fi
     else
         success "WirePlumber A2DP configuration already present"
     fi
@@ -413,13 +425,51 @@ LUAEOF
 enable_linger() {
     header "Enabling user session persistence"
 
-    # loginctl linger allows user services to run without being logged in
+    # loginctl linger allows user services to run without being logged in.
+    # This is required for headless operation (no X session / no interactive login).
     if loginctl show-user "${INSTALL_USER}" 2>/dev/null | grep -q "Linger=yes"; then
         success "User linger already enabled"
     else
         info "Enabling linger for ${INSTALL_USER}..."
-        sudo loginctl enable-linger "${INSTALL_USER}"
-        success "User linger enabled — services will start at boot"
+        if sudo loginctl enable-linger "${INSTALL_USER}" 2>/dev/null; then
+            success "User linger enabled — services will start at boot without login"
+        else
+            warn "Could not enable linger (sudo unavailable or loginctl failed)."
+            warn "SoundSync will NOT start automatically after reboot on a headless system."
+            warn "Fix manually with: sudo loginctl enable-linger ${INSTALL_USER}"
+        fi
+    fi
+}
+
+# ── Persist snd-aloop kernel module ──────────────────────────────────────────
+configure_snd_aloop() {
+    header "Configuring ALSA loopback module"
+
+    local modules_conf="/etc/modules-load.d/soundsync.conf"
+
+    # Load immediately for this session
+    if ! lsmod 2>/dev/null | grep -q "^snd_aloop"; then
+        info "Loading snd-aloop kernel module..."
+        if sudo modprobe snd-aloop 2>/dev/null; then
+            success "snd-aloop module loaded"
+        else
+            warn "Could not load snd-aloop — ALSA loopback unavailable for this session"
+        fi
+    else
+        success "snd-aloop module already loaded"
+    fi
+
+    # Persist across reboots
+    if [ ! -f "${modules_conf}" ]; then
+        info "Persisting snd-aloop across reboots via ${modules_conf}..."
+        if echo "snd-aloop" | sudo tee "${modules_conf}" > /dev/null 2>&1; then
+            success "snd-aloop will load automatically after reboot"
+        else
+            warn "Could not write ${modules_conf} — snd-aloop may not load after reboot"
+            warn "Fix manually: echo 'snd-aloop' | sudo tee ${modules_conf}"
+        fi
+    else
+        success "snd-aloop persistence already configured (${modules_conf})"
     fi
 }
 
@@ -614,13 +664,16 @@ Documentation=https://github.com/tunlezah/BluetoothA2DP
 After=network.target bluetooth.target pipewire.service
 Wants=pipewire.service wireplumber.service
 Requires=dbus.socket
+# Allow up to 10 restarts within 5 minutes before systemd gives up.
+StartLimitBurst=10
+StartLimitIntervalSec=300
 
 [Service]
 Type=simple
 ExecStart=${INSTALL_BIN}/soundsync --port ${PORT} --name "${DEVICE_NAME}" --adapter ${ADAPTER}
 Restart=on-failure
-RestartSec=5s
-RestartBurst=3
+# 10 s between restarts gives the BT adapter time to re-enumerate after a freeze.
+RestartSec=10s
 
 # Environment
 Environment=LOG_FORMAT=json
@@ -777,6 +830,7 @@ main() {
     install_rust
     configure_bluez
     configure_pipewire
+    configure_snd_aloop
     enable_linger
     build_binary
     install_binary

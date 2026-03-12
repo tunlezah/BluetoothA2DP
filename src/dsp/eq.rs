@@ -19,8 +19,27 @@ pub const EQ_FREQUENCIES: [f64; 10] = [
     60.0, 120.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 12000.0, 16000.0,
 ];
 
-/// Q factor for graphic EQ bands (constant-Q, √2).
+/// Q factor for interior graphic EQ bands (constant-Q, √2 for 1-octave bands).
 pub const EQ_Q_FACTOR: f64 = std::f64::consts::SQRT_2;
+
+/// Per-band Q factors, calculated from the octave spacing between adjacent bands.
+///
+/// Bands 0 (60 Hz) and 9 (16 kHz) use shelving filters; the Q value here is
+/// unused for them but kept for indexing consistency.
+/// Bands 7 (8 kHz) and 8 (12 kHz) are spaced closer than 1 octave, so their
+/// Q is raised to narrow the bell accordingly.
+pub const EQ_BAND_Q: [f64; 10] = [
+    0.707, // 60 Hz  — low shelf (Q unused, included for alignment)
+    1.414, // 120 Hz — ~1-octave band
+    1.414, // 250 Hz — ~1-octave band
+    1.414, // 500 Hz — 1-octave band
+    1.414, // 1 kHz  — 1-octave band
+    1.414, // 2 kHz  — 1-octave band
+    1.414, // 4 kHz  — 1-octave band
+    1.820, // 8 kHz  — 0.78-octave band (8→12 kHz)
+    2.870, // 12 kHz — 0.5-octave band  (8→16 kHz split)
+    0.707, // 16 kHz — high shelf (Q unused, included for alignment)
+];
 
 /// Gain range limits in dB.
 pub const EQ_GAIN_MIN: f32 = -12.0;
@@ -52,8 +71,26 @@ impl EqBand {
     }
 
     /// Compute the biquad coefficients for this band at the given sample rate.
+    /// Uses a peaking filter with √2 Q (kept for backward-compatible call sites).
     pub fn coefficients(&self, sample_rate: f64) -> BiquadCoeffs {
         BiquadCoeffs::peaking_eq(self.freq, self.gain_db as f64, EQ_Q_FACTOR, sample_rate)
+    }
+}
+
+/// Compute per-band coefficients using the correct filter type and Q.
+///
+/// - Band 0 (60 Hz)  → low shelf
+/// - Band 9 (16 kHz) → high shelf
+/// - All others      → peaking biquad with per-band Q from EQ_BAND_Q
+pub fn make_band_coeffs(band_index: usize, band: &EqBand, sample_rate: f64) -> BiquadCoeffs {
+    let gain = band.gain_db as f64;
+    match band_index {
+        0 => BiquadCoeffs::low_shelf(band.freq, gain, sample_rate),
+        9 => BiquadCoeffs::high_shelf(band.freq, gain, sample_rate),
+        i => {
+            let q = EQ_BAND_Q.get(i).copied().unwrap_or(EQ_Q_FACTOR);
+            BiquadCoeffs::peaking_eq(band.freq, gain, q, sample_rate)
+        }
     }
 }
 
@@ -88,8 +125,9 @@ impl Equaliser {
 
     /// Update a single band's gain.
     ///
-    /// Coefficients are updated without resetting filter state, providing
-    /// smooth transitions without clicks.
+    /// Coefficients are updated without resetting filter state so the audio
+    /// thread never sees a discontinuity. Uses the correct filter type
+    /// (low shelf / high shelf / peaking) and per-band Q factor for the band.
     pub fn set_band_gain(&self, band_index: usize, gain_db: f32) {
         if band_index >= 10 {
             tracing::warn!("EQ band index {} out of range", band_index);
@@ -102,7 +140,7 @@ impl Equaliser {
         let band = bands[band_index];
         drop(bands);
 
-        let coeffs = band.coefficients(self.sample_rate);
+        let coeffs = make_band_coeffs(band_index, &band, self.sample_rate);
         let mut filters = self.filters.lock().unwrap();
         filters[band_index].update_coeffs(coeffs);
 
@@ -115,34 +153,24 @@ impl Equaliser {
     }
 
     /// Apply a full set of EQ bands at once.
+    ///
+    /// Coefficients are updated in-place via `update_coeffs` so filter state
+    /// (delay elements w1/w2) is preserved for each band, preventing the
+    /// click/zipper noise that a full filter replacement would cause.
     pub fn set_bands(&self, bands: &[EqBand]) {
         if bands.len() != 10 {
             tracing::warn!("Expected 10 EQ bands, got {}", bands.len());
             return;
         }
 
-        let mut new_filters = [
-            StereoBiquad::identity(),
-            StereoBiquad::identity(),
-            StereoBiquad::identity(),
-            StereoBiquad::identity(),
-            StereoBiquad::identity(),
-            StereoBiquad::identity(),
-            StereoBiquad::identity(),
-            StereoBiquad::identity(),
-            StereoBiquad::identity(),
-            StereoBiquad::identity(),
-        ];
-
-        for (i, band) in bands.iter().enumerate() {
-            let gain_db = band.gain_db.clamp(EQ_GAIN_MIN, EQ_GAIN_MAX);
-            let clamped_band = EqBand::new(band.freq, gain_db);
-            new_filters[i] = StereoBiquad::new(clamped_band.coefficients(self.sample_rate));
-        }
-
         {
             let mut filters = self.filters.lock().unwrap();
-            *filters = new_filters;
+            for (i, band) in bands.iter().enumerate() {
+                let gain_db = band.gain_db.clamp(EQ_GAIN_MIN, EQ_GAIN_MAX);
+                let clamped = EqBand::new(band.freq, gain_db);
+                let coeffs = make_band_coeffs(i, &clamped, self.sample_rate);
+                filters[i].update_coeffs(coeffs);
+            }
         }
         {
             let mut current_bands = self.bands.lock().unwrap();

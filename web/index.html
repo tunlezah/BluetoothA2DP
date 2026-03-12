@@ -31,7 +31,7 @@
         </div>
         <div class="app-title">
           <div class="app-name">SoundSync</div>
-          <div class="app-subtitle">Bluetooth Audio &nbsp;<span class="app-version">v1.2.0</span></div>
+          <div class="app-subtitle">Bluetooth Audio &nbsp;<span class="app-version">v1.3.0</span></div>
         </div>
         <!-- Connection status pill -->
         <div id="status-pill" class="status-pill" data-status="unavailable" aria-label="Bluetooth status">
@@ -205,6 +205,7 @@
                   onchange="SoundSync.setStreamQuality(this.value)">
             <option value="mp3">MP3 128k</option>
             <option value="aac">AAC 192k</option>
+            <option value="heaac">HE-AAC 64k</option>
             <option value="wav">Lossless WAV</option>
           </select>
         </div>
@@ -301,7 +302,7 @@
           </div>
           <div class="settings-row">
             <span class="settings-label">Version</span>
-            <span class="stat-value" style="font-size:11px">v1.2.0</span>
+            <span class="stat-value" style="font-size:11px">v1.3.0</span>
           </div>
           <button class="settings-btn" id="btn-refresh" onclick="SoundSync.refresh()">Refresh Status</button>
         </div>

@@ -307,6 +307,11 @@ const SoundSync = (() => {
         showToast(event.data.message, 'error');
         break;
 
+      case 'service_stopping':
+        updateStatusPill('unavailable', 'Service restarting…');
+        showToast('SoundSync is restarting — reconnecting shortly', 'info');
+        break;
+
       default:
         break;
     }

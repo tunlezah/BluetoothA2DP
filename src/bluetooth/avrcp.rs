@@ -20,6 +20,11 @@ use zbus::Connection;
 
 use crate::state::{AppStateHandle, DeviceState, PlaybackStatus, SystemEvent, TrackInfo};
 
+/// Poll interval when a device is actively connected with AVRCP.
+const POLL_ACTIVE_MS: u64 = 250;
+/// Poll interval when no device is connected — reduces wakeups when idle.
+const POLL_IDLE_MS: u64 = 2000;
+
 /// D-Bus proxy for `org.bluez.MediaPlayer1`.
 ///
 /// The `Track` property returns `a{sv}` — a string-keyed variant dict.
@@ -55,15 +60,32 @@ pub async fn run_avrcp_monitor(state: AppStateHandle) {
 
     let mut last_track: Option<TrackInfo> = None;
     let mut last_status = PlaybackStatus::Unknown;
-    // Poll at 250 ms for snappy play/pause and track-change updates.
-    let mut interval = tokio::time::interval(Duration::from_millis(250));
 
     // Cached proxy — rebuilt only when the active device address changes.
     let mut cached_addr: Option<String> = None;
     let mut cached_proxy: Option<MediaPlayer1Proxy<'_>> = None;
 
     loop {
-        interval.tick().await;
+        // Adaptive interval: 250 ms while a device is connected, 2 s when idle.
+        // This avoids unnecessary D-Bus wakeups when no device is present.
+        let is_connected = {
+            let s = state.state.read().await;
+            s.devices.values().any(|d| {
+                matches!(
+                    d.state,
+                    DeviceState::AudioActive
+                        | DeviceState::PipewireSourceReady
+                        | DeviceState::ProfileNegotiated
+                        | DeviceState::Connected
+                )
+            })
+        };
+        let poll_ms = if is_connected {
+            POLL_ACTIVE_MS
+        } else {
+            POLL_IDLE_MS
+        };
+        tokio::time::sleep(Duration::from_millis(poll_ms)).await;
 
         // Find the highest-priority connected device and adapter path
         let (device_addr, adapter_name) = {
