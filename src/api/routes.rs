@@ -126,6 +126,8 @@ struct PresetsResponse {
 #[derive(Deserialize)]
 struct StreamQueryParams {
     quality: Option<String>,
+    /// `low` for reduced latency (smaller parec buffer, less pre-roll).
+    latency: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -599,6 +601,18 @@ async fn get_audio_stream(
     headers: HeaderMap,
 ) -> impl axum::response::IntoResponse {
     // Resolve quality: per-request param > stored config > Accept-header negotiation.
+    let low_latency = params
+        .latency
+        .as_deref()
+        .map(|l| l.eq_ignore_ascii_case("low"))
+        .unwrap_or(false);
+
+    let is_safari = headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .map(|ua| ua.contains("Safari") && !ua.contains("Chrome") && !ua.contains("Chromium"))
+        .unwrap_or(false);
+
     let (quality, aac_encoder) = {
         let s = state.app.state.read().await;
         let config_quality = s.config.stream_quality.clone();
@@ -620,6 +634,16 @@ async fn get_audio_stream(
         (q, enc)
     };
 
+    // parec latency: 20ms for low-latency mode, 50ms normal
+    let latency_msec = if low_latency { 20 } else { 50 };
+
+    // Low-delay ffmpeg flags: reduce encoder look-ahead when low latency is on.
+    let ffmpeg_low_delay = if low_latency {
+        " -flags +low_delay"
+    } else {
+        ""
+    };
+
     match quality.as_str() {
         "heaac" => {
             // HE-AAC (AAC with Spectral Band Replication) at 64 kbps.
@@ -632,71 +656,73 @@ async fn get_audio_stream(
                      (encoder = {}) — falling back to AAC 192k",
                     aac_encoder
                 );
-                // Recursive-style: fall through to standard AAC
                 let cmd = format!(
-                    "parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
+                    "parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=44100 --channels=2 --latency-msec={} \
                      | ffmpeg -hide_banner -loglevel quiet \
-                              -fflags +nobuffer \
+                              -fflags +nobuffer{} \
                               -f s16le -ar 44100 -ac 2 -i pipe:0 \
                               -acodec {} -b:a 192k -f adts -flush_packets 1 pipe:1",
-                    aac_encoder
+                    latency_msec, ffmpeg_low_delay, aac_encoder
                 );
                 if let Some(resp) = try_ffmpeg_stream(cmd, "audio/aac").await {
                     return resp;
                 }
-                return wav_stream_response().await;
+                return wav_stream_response(low_latency, is_safari).await;
             }
-            let cmd =
-                "parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
+            let cmd = format!(
+                "parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=44100 --channels=2 --latency-msec={} \
                  | ffmpeg -hide_banner -loglevel quiet \
-                          -fflags +nobuffer \
+                          -fflags +nobuffer{} \
                           -f s16le -ar 44100 -ac 2 -i pipe:0 \
-                          -acodec libfdk_aac -profile:a aac_he -b:a 64k -f adts -flush_packets 1 pipe:1"
-                    .to_string();
+                          -acodec libfdk_aac -profile:a aac_he -b:a 64k -f adts -flush_packets 1 pipe:1",
+                latency_msec, ffmpeg_low_delay
+            );
             if let Some(resp) = try_ffmpeg_stream(cmd, "audio/aac").await {
                 tracing::info!("Audio stream: HE-AAC 64k (libfdk_aac) pipeline started");
                 return resp;
             }
             tracing::warn!("Audio stream: HE-AAC pipeline failed, falling back to WAV");
-            wav_stream_response().await
+            wav_stream_response(low_latency, is_safari).await
         }
         "aac" => {
             // AAC 192 kbps via ADTS container — streamable, no seeking required.
             // Safari and Chrome both decode audio/aac ADTS streams natively.
             let cmd = format!(
-                "parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
+                "parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=44100 --channels=2 --latency-msec={} \
                  | ffmpeg -hide_banner -loglevel quiet \
-                          -fflags +nobuffer \
+                          -fflags +nobuffer{} \
                           -f s16le -ar 44100 -ac 2 -i pipe:0 \
                           -acodec {} -b:a 192k -f adts -flush_packets 1 pipe:1",
-                aac_encoder
+                latency_msec, ffmpeg_low_delay, aac_encoder
             );
             if let Some(resp) = try_ffmpeg_stream(cmd, "audio/aac").await {
                 tracing::info!("Audio stream: AAC 192k ({}) pipeline started", aac_encoder);
                 return resp;
             }
             tracing::warn!("Audio stream: AAC ffmpeg pipeline failed, falling back to WAV");
-            wav_stream_response().await
+            wav_stream_response(low_latency, is_safari).await
         }
         "wav" => {
             // Lossless PCM — highest quality, fine on LAN (~1.4 Mbps).
             tracing::info!("Audio stream: lossless WAV requested");
-            wav_stream_response().await
+            wav_stream_response(low_latency, is_safari).await
         }
         _ => {
             // MP3 128 kbps — default, universally supported.
-            let cmd = "parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
-                       | ffmpeg -hide_banner -loglevel quiet \
-                                -fflags +nobuffer \
-                                -f s16le -ar 44100 -ac 2 -i pipe:0 \
-                                -acodec libmp3lame -b:a 128k -f mp3 -flush_packets 1 pipe:1"
-                .to_string();
+            let cmd = format!(
+                "parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=44100 --channels=2 --latency-msec={} \
+                 | ffmpeg -hide_banner -loglevel quiet \
+                          -fflags +nobuffer{} \
+                          -f s16le -ar 44100 -ac 2 -i pipe:0 \
+                          -acodec libmp3lame -b:a 128k -f mp3 -flush_packets 1 pipe:1",
+                latency_msec, ffmpeg_low_delay
+            );
             if let Some(resp) = try_ffmpeg_stream(cmd, "audio/mpeg").await {
                 tracing::info!("Audio stream: MP3 128k pipeline started");
                 return resp;
             }
             tracing::warn!("Audio stream: MP3 ffmpeg pipeline failed, falling back to WAV");
-            wav_stream_response().await
+            wav_stream_response(low_latency, is_safari).await
         }
     }
 }
@@ -721,16 +747,27 @@ async fn try_ffmpeg_stream(
 
 /// Build a streaming WAV response from a fresh `parec` process.
 ///
-/// Uses a streaming WAV header with data-chunk size 0xFFFF_FFFE so the browser
-/// never considers the download complete.
-async fn wav_stream_response() -> axum::response::Response {
+/// Uses a streaming WAV header with both RIFF and data chunk sizes set to
+/// `0xFFFF_FFFF` so the browser never considers the download complete.
+///
+/// # Arguments
+/// * `low_latency` — when true, use a smaller parec buffer (20 ms) and reduced
+///   pre-roll (~50 ms instead of ~250 ms).
+/// * `is_safari` — when true, serve as `audio/x-wav` for better Safari compat.
+async fn wav_stream_response(low_latency: bool, is_safari: bool) -> axum::response::Response {
+    let latency_arg = if low_latency {
+        "--latency-msec=20"
+    } else {
+        "--latency-msec=50"
+    };
+
     let parec = tokio::process::Command::new("parec")
         .args([
             "--device=@DEFAULT_MONITOR@",
             "--format=s16le",
             "--rate=44100",
             "--channels=2",
-            "--latency-msec=50",
+            latency_arg,
         ])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -747,20 +784,21 @@ async fn wav_stream_response() -> axum::response::Response {
                 }
             };
 
-            tracing::info!("Audio stream: parec WAV started");
+            tracing::info!(
+                low_latency = low_latency,
+                safari = is_safari,
+                "Audio stream: parec WAV started"
+            );
 
-            // Pre-roll buffer: collect ~250 ms of PCM before sending the first
-            // byte to the browser.  This gives the player enough data to fill
-            // its decode buffer, preventing stutter on WiFi with bursty loss.
-            // 250 ms @ 44100 Hz, 2 ch, 16-bit = 44100 bytes.
-            const PRE_ROLL_BYTES: usize = 44_100;
+            // Pre-roll buffer: collect PCM before sending the first byte to the
+            // browser.  Normal mode: ~250 ms (44 100 bytes) for WiFi resilience.
+            // Low-latency mode: ~50 ms (8 820 bytes) to minimise startup delay.
+            let pre_roll_bytes: usize = if low_latency { 8_820 } else { 44_100 };
             let pre_roll = {
-                let mut buf = vec![0u8; PRE_ROLL_BYTES];
+                let mut buf = vec![0u8; pre_roll_bytes];
                 let mut filled = 0usize;
-                // Parec always produces data (silence when idle), so this
-                // completes quickly.  A 3-second timeout guards against hangs.
                 let _ = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-                    while filled < PRE_ROLL_BYTES {
+                    while filled < pre_roll_bytes {
                         match stdout.read(&mut buf[filled..]).await {
                             Ok(0) | Err(_) => break,
                             Ok(n) => filled += n,
@@ -773,16 +811,18 @@ async fn wav_stream_response() -> axum::response::Response {
             };
 
             // Minimal 44-byte WAV header for endless streaming.
+            // Both RIFF chunk size and data chunk size use the 0xFFFFFFFF sentinel
+            // directly — this avoids a u32 overflow that occurred when computing
+            // (data_size + 36) and signals "unknown length" to all parsers.
             const CHANNELS: u16 = 2;
             const SAMPLE_RATE: u32 = 44_100;
             const BITS: u16 = 16;
             let byte_rate = SAMPLE_RATE * CHANNELS as u32 * BITS as u32 / 8;
             let block_align = CHANNELS * BITS / 8;
-            let data_size: u32 = 0xFFFF_FFFE;
 
             let mut wav_header = Vec::with_capacity(44);
             wav_header.extend_from_slice(b"RIFF");
-            wav_header.extend_from_slice(&(data_size + 36).to_le_bytes());
+            wav_header.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // RIFF chunk size
             wav_header.extend_from_slice(b"WAVE");
             wav_header.extend_from_slice(b"fmt ");
             wav_header.extend_from_slice(&16u32.to_le_bytes());
@@ -793,7 +833,7 @@ async fn wav_stream_response() -> axum::response::Response {
             wav_header.extend_from_slice(&block_align.to_le_bytes());
             wav_header.extend_from_slice(&BITS.to_le_bytes());
             wav_header.extend_from_slice(b"data");
-            wav_header.extend_from_slice(&data_size.to_le_bytes());
+            wav_header.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // data chunk size
 
             let header_chunk = Ok::<Vec<u8>, std::io::Error>(wav_header);
             let pre_roll_chunk = Ok::<Vec<u8>, std::io::Error>(pre_roll);
@@ -815,9 +855,16 @@ async fn wav_stream_response() -> axum::response::Response {
                 .chain(stream::once(async move { pre_roll_chunk }))
                 .chain(pcm_stream);
 
+            // Safari handles `audio/x-wav` more reliably than `audio/wav`.
+            let content_type = if is_safari {
+                "audio/x-wav"
+            } else {
+                "audio/wav"
+            };
+
             axum::response::Response::builder()
                 .status(StatusCode::OK)
-                .header("Content-Type", "audio/wav")
+                .header("Content-Type", content_type)
                 .header("Cache-Control", "no-cache, no-store")
                 .body(axum::body::Body::from_stream(body_stream))
                 .unwrap()
