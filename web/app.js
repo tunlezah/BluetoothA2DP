@@ -216,11 +216,32 @@ const SoundSync = (() => {
     spectrum.init();
     connectWebSocket();
     fetchStreamQualities();
+    initAudioErrorHandler();
 
     document.addEventListener('keydown', (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
       if (e.key === 's' || e.key === 'S') toggleScan();
       if (e.key === 'Escape') closeSettings();
+    });
+  }
+
+  // Attach a persistent error handler to the audio element so server-side
+  // failures (503, empty stream) are surfaced to the user.
+  function initAudioErrorHandler() {
+    const audio = getAudioPlayer();
+    if (!audio) return;
+    audio.addEventListener('error', () => {
+      const btn = document.getElementById('btn-listen');
+      if (btn) btn.textContent = 'Listen';
+      _stopBufferPoll();
+      _playPromise = null;
+      _playStartTime = 0;
+      // Only show a toast when the element has an active src (i.e. we tried to play).
+      if (audio.src) {
+        const code = audio.error ? audio.error.code : 0;
+        const msgs = { 1: 'Aborted', 2: 'Network error', 3: 'Decode error', 4: 'Audio not supported' };
+        showToast('Audio stream error: ' + (msgs[code] || 'Unknown error') + '. Is a Bluetooth device streaming?', 'error');
+      }
     });
   }
 
