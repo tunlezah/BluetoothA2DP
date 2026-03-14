@@ -721,7 +721,14 @@ async fn get_audio_stream(
 }
 
 /// Attempt to start a `sh -c <cmd>` pipeline and return a streaming response.
-/// Returns `None` if the process could not be spawned or produced no stdout.
+///
+/// Returns `None` if:
+/// - the process could not be spawned, or
+/// - the pipeline produces no output within 3 seconds (e.g. parec or ffmpeg
+///   unavailable, audio device missing).
+///
+/// Waiting for the first byte before committing to the response ensures the
+/// WAV fallback is actually reachable when the compressed pipeline fails.
 async fn try_ffmpeg_stream(
     cmd: String,
     content_type: &'static str,
@@ -734,8 +741,52 @@ async fn try_ffmpeg_stream(
         .spawn()
         .ok()?;
 
-    let stdout = child.stdout.take()?;
-    Some(compressed_stream_response(stdout, child, content_type))
+    let mut stdout = child.stdout.take()?;
+
+    // Read the first chunk to verify the pipeline is actually producing data.
+    // If parec or ffmpeg exits immediately (device missing, codec unavailable),
+    // read returns 0 / times out and we return None so the caller falls back to WAV.
+    let mut first_buf = vec![0u8; 8192];
+    let first_n = match tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        stdout.read(&mut first_buf),
+    )
+    .await
+    {
+        Ok(Ok(n)) if n > 0 => n,
+        _ => {
+            tracing::warn!("Audio pipeline produced no data within 3 s — falling back to WAV");
+            let _ = child.kill().await;
+            return None;
+        }
+    };
+    first_buf.truncate(first_n);
+
+    // Pipeline is live — stream the first chunk followed by the rest.
+    let first_chunk = Ok::<Vec<u8>, std::io::Error>(first_buf);
+    let rest_stream = stream::unfold((stdout, child), |(mut reader, mut proc)| async move {
+        let mut buf = vec![0u8; 8192];
+        match reader.read(&mut buf).await {
+            Ok(0) | Err(_) => {
+                let _ = proc.kill().await;
+                None
+            }
+            Ok(n) => {
+                buf.truncate(n);
+                Some((Ok::<Vec<u8>, std::io::Error>(buf), (reader, proc)))
+            }
+        }
+    });
+    let audio_stream = stream::once(async move { first_chunk }).chain(rest_stream);
+
+    Some(
+        axum::response::Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", content_type)
+            .header("Cache-Control", "no-cache, no-store")
+            .body(axum::body::Body::from_stream(audio_stream))
+            .unwrap(),
+    )
 }
 
 /// Build a streaming WAV response from a fresh `parec` process.
@@ -786,6 +837,8 @@ async fn wav_stream_response(low_latency: bool, is_safari: bool) -> axum::respon
             // Pre-roll buffer: collect PCM before sending the first byte to the
             // browser.  Normal mode: ~250 ms (44 100 bytes) for WiFi resilience.
             // Low-latency mode: ~50 ms (8 820 bytes) to minimise startup delay.
+            // If parec exits immediately (device missing), pre_roll will be empty
+            // and we return 503 so the browser shows a real error.
             let pre_roll_bytes: usize = if low_latency { 8_820 } else { 44_100 };
             let pre_roll = {
                 let mut buf = vec![0u8; pre_roll_bytes];
@@ -802,6 +855,14 @@ async fn wav_stream_response(low_latency: bool, is_safari: bool) -> axum::respon
                 buf.truncate(filled);
                 buf
             };
+
+            if pre_roll.is_empty() {
+                tracing::error!(
+                    "Audio stream: parec WAV produced no data — is soundsync-capture sink present?"
+                );
+                let _ = child.kill().await;
+                return error_response(StatusCode::SERVICE_UNAVAILABLE);
+            }
 
             // Minimal 44-byte WAV header for endless streaming.
             // Both RIFF chunk size and data chunk size use the 0xFFFFFFFF sentinel
@@ -869,33 +930,6 @@ async fn wav_stream_response(low_latency: bool, is_safari: bool) -> axum::respon
     }
 }
 
-/// Build a streaming compressed-audio response from an already-spawned child process.
-fn compressed_stream_response(
-    stdout: tokio::process::ChildStdout,
-    child: tokio::process::Child,
-    content_type: &'static str,
-) -> axum::response::Response {
-    let audio_stream = stream::unfold((stdout, child), |(mut reader, mut proc)| async move {
-        let mut buf = vec![0u8; 8192];
-        match reader.read(&mut buf).await {
-            Ok(0) | Err(_) => {
-                let _ = proc.kill().await;
-                None
-            }
-            Ok(n) => {
-                buf.truncate(n);
-                Some((Ok::<Vec<u8>, std::io::Error>(buf), (reader, proc)))
-            }
-        }
-    });
-
-    axum::response::Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", content_type)
-        .header("Cache-Control", "no-cache, no-store")
-        .body(axum::body::Body::from_stream(audio_stream))
-        .unwrap()
-}
 
 /// Select the best quality the browser supports based on its Accept header.
 ///
