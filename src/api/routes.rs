@@ -637,13 +637,6 @@ async fn get_audio_stream(
     // parec latency: 20ms for low-latency mode, 50ms normal
     let latency_msec = if low_latency { 20 } else { 50 };
 
-    // Low-delay ffmpeg flags: reduce encoder look-ahead when low latency is on.
-    let ffmpeg_low_delay = if low_latency {
-        " -flags +low_delay"
-    } else {
-        ""
-    };
-
     match quality.as_str() {
         "heaac" => {
             // HE-AAC (AAC with Spectral Band Replication) at 64 kbps.
@@ -659,10 +652,10 @@ async fn get_audio_stream(
                 let cmd = format!(
                     "parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=44100 --channels=2 --latency-msec={} \
                      | ffmpeg -hide_banner -loglevel quiet \
-                              -fflags +nobuffer{} \
+                              -fflags +nobuffer \
                               -f s16le -ar 44100 -ac 2 -i pipe:0 \
                               -acodec {} -b:a 192k -f adts -flush_packets 1 pipe:1",
-                    latency_msec, ffmpeg_low_delay, aac_encoder
+                    latency_msec, aac_encoder
                 );
                 if let Some(resp) = try_ffmpeg_stream(cmd, "audio/aac").await {
                     return resp;
@@ -672,10 +665,10 @@ async fn get_audio_stream(
             let cmd = format!(
                 "parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=44100 --channels=2 --latency-msec={} \
                  | ffmpeg -hide_banner -loglevel quiet \
-                          -fflags +nobuffer{} \
+                          -fflags +nobuffer \
                           -f s16le -ar 44100 -ac 2 -i pipe:0 \
                           -acodec libfdk_aac -profile:a aac_he -b:a 64k -f adts -flush_packets 1 pipe:1",
-                latency_msec, ffmpeg_low_delay
+                latency_msec
             );
             if let Some(resp) = try_ffmpeg_stream(cmd, "audio/aac").await {
                 tracing::info!("Audio stream: HE-AAC 64k (libfdk_aac) pipeline started");
@@ -690,10 +683,10 @@ async fn get_audio_stream(
             let cmd = format!(
                 "parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=44100 --channels=2 --latency-msec={} \
                  | ffmpeg -hide_banner -loglevel quiet \
-                          -fflags +nobuffer{} \
+                          -fflags +nobuffer \
                           -f s16le -ar 44100 -ac 2 -i pipe:0 \
                           -acodec {} -b:a 192k -f adts -flush_packets 1 pipe:1",
-                latency_msec, ffmpeg_low_delay, aac_encoder
+                latency_msec, aac_encoder
             );
             if let Some(resp) = try_ffmpeg_stream(cmd, "audio/aac").await {
                 tracing::info!("Audio stream: AAC 192k ({}) pipeline started", aac_encoder);
@@ -712,10 +705,10 @@ async fn get_audio_stream(
             let cmd = format!(
                 "parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=44100 --channels=2 --latency-msec={} \
                  | ffmpeg -hide_banner -loglevel quiet \
-                          -fflags +nobuffer{} \
+                          -fflags +nobuffer \
                           -f s16le -ar 44100 -ac 2 -i pipe:0 \
                           -acodec libmp3lame -b:a 128k -f mp3 -flush_packets 1 pipe:1",
-                latency_msec, ffmpeg_low_delay
+                latency_msec
             );
             if let Some(resp) = try_ffmpeg_stream(cmd, "audio/mpeg").await {
                 tracing::info!("Audio stream: MP3 128k pipeline started");

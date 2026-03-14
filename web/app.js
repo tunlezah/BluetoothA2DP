@@ -494,6 +494,7 @@ const SoundSync = (() => {
 
   let _playStartTime = 0;   // Date.now() when play() is called
   let _bufferPollId = null;  // requestAnimationFrame id for buffer depth polling
+  let _onPlaying = null;     // 'playing' listener ref so _stopBufferPoll can remove it
 
   function setLowLatency(enabled) {
     state.lowLatency = enabled;
@@ -531,7 +532,7 @@ const SoundSync = (() => {
     const bufferEl = document.getElementById('stat-buffer');
 
     // Measure startup latency once, on the first `playing` event.
-    const onPlaying = () => {
+    _onPlaying = () => {
       if (_playStartTime > 0) {
         const ms = Date.now() - _playStartTime;
         if (latencyEl) {
@@ -540,9 +541,10 @@ const SoundSync = (() => {
         }
         _playStartTime = 0;
       }
-      audio.removeEventListener('playing', onPlaying);
+      audio.removeEventListener('playing', _onPlaying);
+      _onPlaying = null;
     };
-    audio.addEventListener('playing', onPlaying);
+    audio.addEventListener('playing', _onPlaying);
 
     // Poll buffer depth at ~4 Hz via requestAnimationFrame.
     let lastPoll = 0;
@@ -566,6 +568,11 @@ const SoundSync = (() => {
     if (_bufferPollId) {
       cancelAnimationFrame(_bufferPollId);
       _bufferPollId = null;
+    }
+    if (_onPlaying) {
+      const audio = getAudioPlayer();
+      if (audio) audio.removeEventListener('playing', _onPlaying);
+      _onPlaying = null;
     }
     const latencyEl = document.getElementById('stat-latency');
     const bufferEl = document.getElementById('stat-buffer');
