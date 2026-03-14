@@ -957,6 +957,7 @@ async fn serve_static(
     axum::response::Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", content_type)
+        .header("Cache-Control", "no-cache, no-store")
         .body(axum::body::Body::from(content))
         .unwrap()
 }
