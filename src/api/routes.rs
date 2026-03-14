@@ -930,7 +930,6 @@ async fn wav_stream_response(low_latency: bool, is_safari: bool) -> axum::respon
     }
 }
 
-
 /// Select the best quality the browser supports based on its Accept header.
 ///
 /// Browsers typically include `audio/aac`, `audio/mpeg`, etc. in their Accept
