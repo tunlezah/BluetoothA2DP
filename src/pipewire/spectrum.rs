@@ -313,9 +313,21 @@ fn spawn_capture_process() -> Option<Child> {
 
 /// Determine which PulseAudio/PipeWire source device to capture from.
 ///
-/// Returns `"soundsync-capture.monitor"` if that monitor is registered with
-/// the PulseAudio/PipeWire server (verified via `pactl list short sources`),
-/// otherwise falls back to `"@DEFAULT_MONITOR@"`.
+/// Strategy (in priority order):
+///
+/// 1. **BT source node directly** — when a `bluez_input.*` / `bluez_source.*`
+///    source appears in `pactl list short sources` we capture from it directly.
+///    This bypasses WirePlumber's sink-routing decisions entirely: audio comes
+///    straight off the Bluetooth adapter into parec, so it is always present
+///    regardless of whether soundsync-capture or snd_aloop is the WirePlumber
+///    default sink.
+///
+/// 2. **soundsync-capture.monitor** — fallback for when no BT source is
+///    visible yet (e.g., the device connected before PipeWire registered its
+///    node) or for setups that explicitly route BT through the null sink.
+///
+/// 3. **@DEFAULT_MONITOR@** — last resort; resolves to whatever WirePlumber
+///    considers the default sink monitor at the time parec starts.
 fn resolve_capture_device() -> String {
     let sources = std::process::Command::new("pactl")
         .args(["list", "short", "sources"])
@@ -324,14 +336,27 @@ fn resolve_capture_device() -> String {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .unwrap_or_default();
 
-    if sources.contains("soundsync-capture.monitor") {
-        "soundsync-capture.monitor".to_string()
-    } else {
-        tracing::warn!(
-            "soundsync-capture.monitor not found in pactl sources; \
-             falling back to @DEFAULT_MONITOR@. \
-             Ensure the null sink was created at startup."
-        );
-        "@DEFAULT_MONITOR@".to_string()
+    // Priority 1: live BT source node (direct capture, no routing dependency).
+    // `pactl list short sources` columns: <idx> <name> <driver> <spec> <state>
+    const BT_PREFIXES: &[&str] = &["bluez_input.", "bluez_source.", "api.bluez5."];
+    for line in sources.lines() {
+        if let Some(name) = line.split_whitespace().nth(1) {
+            if BT_PREFIXES.iter().any(|pfx| name.starts_with(pfx)) {
+                tracing::debug!(source = %name, "Spectrum: capturing directly from BT source node");
+                return name.to_string();
+            }
+        }
     }
+
+    // Priority 2: soundsync-capture.monitor (EQ-processed audio when routing works).
+    if sources.contains("soundsync-capture.monitor") {
+        tracing::debug!("Spectrum: capturing from soundsync-capture.monitor");
+        return "soundsync-capture.monitor".to_string();
+    }
+
+    tracing::warn!(
+        "Spectrum: no BT source node or soundsync-capture.monitor found; \
+         falling back to @DEFAULT_MONITOR@"
+    );
+    "@DEFAULT_MONITOR@".to_string()
 }

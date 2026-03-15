@@ -269,7 +269,9 @@ fn ensure_capture_sink() {
         // wpctl status lines look like:  "  *  57. soundsync-capture  [vol: 1.00]"
         // The ID is the number before the dot.
         let id = status_text.lines().find_map(|line| {
-            if line.contains("soundsync-capture") {
+            // wpctl status shows the device.description ("SoundSync-Capture"),
+            // not the sink_name ("soundsync-capture") — match case-insensitively.
+            if line.to_ascii_lowercase().contains("soundsync-capture") {
                 line.split_whitespace()
                     .find(|tok| tok.ends_with('.'))
                     .and_then(|tok| tok.trim_end_matches('.').parse::<u32>().ok())
