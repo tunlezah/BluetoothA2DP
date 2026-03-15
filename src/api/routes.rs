@@ -421,7 +421,9 @@ async fn post_audio_source(
             });
 
             tracing::info!("Audio source switched to Bluetooth");
-            Ok(Json(serde_json::json!({ "ok": true, "source": "bluetooth" })))
+            Ok(Json(
+                serde_json::json!({ "ok": true, "source": "bluetooth" }),
+            ))
         }
 
         AudioSource::LineIn => {
