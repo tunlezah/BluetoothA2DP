@@ -482,35 +482,8 @@ configure_snd_aloop() {
 }
 
 # ── Find or build binary ───────────────────────────────────────────────────────
-find_prebuilt_binary() {
-    # Locations to check for an already-built binary (release preferred)
-    local candidates=(
-        "${REPO_DIR}/target/release/soundsync"
-        "${SCRIPT_DIR}/soundsync"
-        "${REPO_DIR}/soundsync"
-        "${REPO_DIR}/target/debug/soundsync"
-    )
-
-    for candidate in "${candidates[@]}"; do
-        if [ -x "${candidate}" ]; then
-            BINARY_PATH="${candidate}"
-            return 0
-        fi
-    done
-
-    return 1
-}
-
 build_binary() {
     header "Building SoundSync"
-
-    # Use a pre-built binary if one exists anywhere in the project tree
-    if find_prebuilt_binary; then
-        success "Pre-built binary found: ${BINARY_PATH} — skipping local build"
-        return
-    fi
-
-    info "No pre-built binary found — building from source..."
 
     # Ensure cargo is in PATH
     source "${HOME}/.cargo/env" 2>/dev/null || true
@@ -665,6 +638,9 @@ install_service() {
         systemctl --user stop soundsync
     fi
 
+    local uid
+    uid=$(id -u)
+
     cat > "${SERVICE_FILE}" << SVCEOF
 [Unit]
 Description=SoundSync — Bluetooth A2DP Sink with DSP EQ
@@ -686,6 +662,9 @@ RestartSec=10s
 # Environment
 Environment=LOG_FORMAT=json
 Environment=RUST_LOG=soundsync=info,tower_http=warn
+# Ensure pactl/parec can find the PipeWire-PulseAudio socket even in lingering sessions.
+Environment=XDG_RUNTIME_DIR=/run/user/${uid}
+Environment=PULSE_RUNTIME_PATH=/run/user/${uid}/pulse
 
 # Resource limits
 LimitNOFILE=65536
