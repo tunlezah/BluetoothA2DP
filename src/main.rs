@@ -193,7 +193,6 @@ fn ensure_capture_sink() {
         .args([
             "load-module",
             "module-null-sink",
-            "media.class=Audio/Sink",
             "sink_name=soundsync-capture",
             "sink_properties=device.description=SoundSync-Capture",
         ])
