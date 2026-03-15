@@ -138,15 +138,12 @@ impl LineInManager {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let module_id: u32 = stdout
-            .trim()
-            .parse()
-            .with_context(|| {
-                format!(
-                    "Failed to parse module ID from pactl output: '{}'",
-                    stdout.trim()
-                )
-            })?;
+        let module_id: u32 = stdout.trim().parse().with_context(|| {
+            format!(
+                "Failed to parse module ID from pactl output: '{}'",
+                stdout.trim()
+            )
+        })?;
 
         tracing::info!(
             module_id = module_id,
