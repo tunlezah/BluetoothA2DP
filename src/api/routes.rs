@@ -591,7 +591,7 @@ async fn post_stream_quality(
 /// advertises (aac > mp3 > wav).  This replaces the need for unreliable
 /// client-side `canPlayType` detection.
 ///
-/// All strategies capture from `@DEFAULT_MONITOR@` (the sink monitor) so they
+/// All strategies capture from `soundsync-capture.monitor` (the sink monitor) so they
 /// match the spectrum analyser capture path.
 async fn get_audio_stream(
     State(state): State<ApiState>,
@@ -634,7 +634,7 @@ async fn get_audio_stream(
                 );
                 // Recursive-style: fall through to standard AAC
                 let cmd = format!(
-                    "parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
+                    "parec --device=soundsync-capture.monitor --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
                      | ffmpeg -hide_banner -loglevel quiet \
                               -fflags +nobuffer \
                               -f s16le -ar 44100 -ac 2 -i pipe:0 \
@@ -647,7 +647,7 @@ async fn get_audio_stream(
                 return wav_stream_response().await;
             }
             let cmd =
-                "parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
+                "parec --device=soundsync-capture.monitor --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
                  | ffmpeg -hide_banner -loglevel quiet \
                           -fflags +nobuffer \
                           -f s16le -ar 44100 -ac 2 -i pipe:0 \
@@ -664,7 +664,7 @@ async fn get_audio_stream(
             // AAC 192 kbps via ADTS container — streamable, no seeking required.
             // Safari and Chrome both decode audio/aac ADTS streams natively.
             let cmd = format!(
-                "parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
+                "parec --device=soundsync-capture.monitor --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
                  | ffmpeg -hide_banner -loglevel quiet \
                           -fflags +nobuffer \
                           -f s16le -ar 44100 -ac 2 -i pipe:0 \
@@ -685,7 +685,7 @@ async fn get_audio_stream(
         }
         _ => {
             // MP3 128 kbps — default, universally supported.
-            let cmd = "parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
+            let cmd = "parec --device=soundsync-capture.monitor --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
                        | ffmpeg -hide_banner -loglevel quiet \
                                 -fflags +nobuffer \
                                 -f s16le -ar 44100 -ac 2 -i pipe:0 \
@@ -726,7 +726,7 @@ async fn try_ffmpeg_stream(
 async fn wav_stream_response() -> axum::response::Response {
     let parec = tokio::process::Command::new("parec")
         .args([
-            "--device=@DEFAULT_MONITOR@",
+            "--device=soundsync-capture.monitor",
             "--format=s16le",
             "--rate=44100",
             "--channels=2",

@@ -252,16 +252,28 @@ fn precompute_band_bins(n: usize) -> Vec<(usize, usize)> {
 
 /// Try to spawn a raw-PCM capture process.
 ///
+/// On PipeWire/WirePlumber systems `@DEFAULT_MONITOR@` may not resolve to
+/// `soundsync-capture.monitor` because WirePlumber manages the default sink
+/// independently and can override what `pactl set-default-sink` sets.
+/// We therefore probe for `soundsync-capture.monitor` first and use that
+/// directly when it exists.  This avoids the @DEFAULT_MONITOR@ resolution
+/// entirely and targets the exact device we control.
+///
 /// Attempts `parec` (pulseaudio-utils) first, then `pw-cat` (pipewire-audio).
 /// Returns `None` if neither tool is available.
 fn spawn_capture_process() -> Option<Child> {
-    // parec: explicitly capture from the default sink monitor so we always get
-    // playback audio, not whatever @DEFAULT_SOURCE@ happens to point to (which
-    // can be a microphone on some systems).
+    // Resolve which monitor to capture from.
+    // Prefer the explicit soundsync-capture monitor we create at startup;
+    // fall back to @DEFAULT_MONITOR@ for systems where soundsync-capture may
+    // not have been registered yet.
+    let device = resolve_capture_device();
+    tracing::debug!(device = %device, "Spectrum capture device selected");
+
+    // parec: capture raw float32 mono PCM from the resolved monitor.
     let parec = Command::new("parec")
         .args([
             "--raw",
-            "--device=@DEFAULT_MONITOR@",
+            &format!("--device={}", device),
             "--channels=1",
             "--rate=44100",
             "--format=float32le",
@@ -275,19 +287,51 @@ fn spawn_capture_process() -> Option<Child> {
         return Some(child);
     }
 
-    // pw-cat fallback: PipeWire native record from the default sink monitor
+    // pw-cat fallback: PipeWire native record.
+    // Also prefer the explicit monitor; fall back to @DEFAULT_SINK@.monitor.
+    let pw_target = if device == "soundsync-capture.monitor" {
+        "soundsync-capture.monitor".to_string()
+    } else {
+        "@DEFAULT_SINK@.monitor".to_string()
+    };
+
     let pw_cat = Command::new("pw-cat")
         .args([
             "--record",
-            "--target=@DEFAULT_SINK@.monitor",
+            &format!("--target={}", pw_target),
             "--channels=1",
             "--rate=44100",
             "--format=f32",
-            "-", // write to stdout
+            "-",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn();
 
     pw_cat.ok()
+}
+
+/// Determine which PulseAudio/PipeWire source device to capture from.
+///
+/// Returns `"soundsync-capture.monitor"` if that monitor is registered with
+/// the PulseAudio/PipeWire server (verified via `pactl list short sources`),
+/// otherwise falls back to `"@DEFAULT_MONITOR@"`.
+fn resolve_capture_device() -> String {
+    let sources = std::process::Command::new("pactl")
+        .args(["list", "short", "sources"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default();
+
+    if sources.contains("soundsync-capture.monitor") {
+        "soundsync-capture.monitor".to_string()
+    } else {
+        tracing::warn!(
+            "soundsync-capture.monitor not found in pactl sources; \
+             falling back to @DEFAULT_MONITOR@. \
+             Ensure the null sink was created at startup."
+        );
+        "@DEFAULT_MONITOR@".to_string()
+    }
 }

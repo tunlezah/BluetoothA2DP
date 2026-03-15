@@ -182,13 +182,18 @@ async fn main() -> anyhow::Result<()> {
 /// Create a PipeWire/PulseAudio null sink that acts as the audio capture bus.
 ///
 /// On headless servers (no sound card) WirePlumber has no output sink to route
-/// Bluetooth A2DP audio to, so nothing ever reaches the default sink monitor
-/// that `parec` and the browser stream capture from.  Creating this null sink
-/// and setting it as the system default gives WirePlumber a routing target;
-/// `parec --device=@DEFAULT_MONITOR@` then captures whatever BT audio arrives.
+/// Bluetooth A2DP audio to, so nothing ever reaches the sink monitor that
+/// `parec` and the browser stream capture from.  Creating this null sink and
+/// setting it as the default gives WirePlumber a routing target.
+///
+/// On PipeWire/WirePlumber systems `pactl set-default-sink` may be overridden
+/// by WirePlumber's own session management.  We therefore also call
+/// `wpctl set-default` (the WirePlumber-native command) which persists through
+/// the session.  Both are attempted; failure of either is non-fatal.
 ///
 /// The call is best-effort — if `pactl` is absent the app continues without it.
 fn ensure_capture_sink() {
+    // ── Step 1: create the null sink (idempotent — ignore "already loaded") ──
     let load = std::process::Command::new("pactl")
         .args([
             "load-module",
@@ -200,27 +205,99 @@ fn ensure_capture_sink() {
 
     match load {
         Ok(out) if out.status.success() => {
-            tracing::info!("Created null sink 'soundsync-capture' for audio capture");
-            // Make it the default so WirePlumber routes BT audio here
-            let _ = std::process::Command::new("pactl")
-                .args(["set-default-sink", "soundsync-capture"])
-                .status();
+            tracing::info!("Created null sink 'soundsync-capture'");
         }
-        Ok(_) => {
-            // Module may already be loaded from a previous run — that's fine.
-            // Still try to set it as the default in case it exists.
-            let _ = std::process::Command::new("pactl")
-                .args(["set-default-sink", "soundsync-capture"])
-                .status();
-            tracing::debug!("pactl load-module returned non-zero (sink may already exist)");
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            tracing::debug!(
+                stderr = %stderr.trim(),
+                "pactl load-module non-zero (sink may already exist)"
+            );
         }
         Err(e) => {
             tracing::warn!(
-                "pactl not available, cannot create capture sink: {}. \
-                 Audio capture will use whatever @DEFAULT_MONITOR@ resolves to.",
+                "pactl not found — cannot create capture sink: {}. \
+                 Install pulseaudio-utils or pipewire-pulse.",
                 e
             );
+            return;
         }
+    }
+
+    // ── Step 2: verify the sink actually exists ───────────────────────────────
+    let sink_exists = std::process::Command::new("pactl")
+        .args(["list", "short", "sinks"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.contains("soundsync-capture"))
+        .unwrap_or(false);
+
+    if !sink_exists {
+        tracing::error!(
+            "soundsync-capture null sink was not found after load-module. \
+             Audio capture will fail. Check that pipewire-pulse is running."
+        );
+        return;
+    }
+
+    tracing::info!("soundsync-capture null sink confirmed present");
+
+    // ── Step 3: set as default via pactl (PulseAudio compat layer) ───────────
+    let pa_ok = std::process::Command::new("pactl")
+        .args(["set-default-sink", "soundsync-capture"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if pa_ok {
+        tracing::info!("Set soundsync-capture as default sink (pactl)");
+    } else {
+        tracing::warn!("pactl set-default-sink failed — will try wpctl");
+    }
+
+    // ── Step 4: set as default via wpctl (WirePlumber native — persists) ─────
+    // wpctl set-default requires the numeric PipeWire object ID.
+    // We extract it from `wpctl status` output which lists sinks with their IDs.
+    let wpctl_status = std::process::Command::new("wpctl")
+        .args(["status"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok());
+
+    if let Some(status_text) = wpctl_status {
+        // wpctl status lines look like:  "  *  57. soundsync-capture  [vol: 1.00]"
+        // The ID is the number before the dot.
+        let id = status_text.lines().find_map(|line| {
+            if line.contains("soundsync-capture") {
+                line.split_whitespace()
+                    .find(|tok| tok.ends_with('.'))
+                    .and_then(|tok| tok.trim_end_matches('.').parse::<u32>().ok())
+            } else {
+                None
+            }
+        });
+
+        if let Some(node_id) = id {
+            let wp_ok = std::process::Command::new("wpctl")
+                .args(["set-default", &node_id.to_string()])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+
+            if wp_ok {
+                tracing::info!(
+                    node_id,
+                    "Set soundsync-capture as default sink (wpctl — persistent)"
+                );
+            } else {
+                tracing::warn!(node_id, "wpctl set-default failed");
+            }
+        } else {
+            tracing::debug!("soundsync-capture not found in wpctl status output");
+        }
+    } else {
+        tracing::debug!("wpctl not available — skipping WirePlumber default-sink assignment");
     }
 }
 
