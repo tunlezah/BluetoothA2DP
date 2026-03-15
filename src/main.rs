@@ -62,6 +62,39 @@ async fn main() -> anyhow::Result<()> {
     std::env::set_var("LOG_FORMAT", &args.log_format);
     logging::init();
 
+    // Ensure XDG_RUNTIME_DIR is set so parec/pactl can find the PipeWire socket.
+    // This is required when soundsync is launched by a process that didn't inherit
+    // the variable (e.g. a systemd service without the env override, or a custom
+    // init script).  We derive the path from the running user's UID.
+    if std::env::var("XDG_RUNTIME_DIR").is_err() {
+        if let Some(uid_bytes) = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| o.stdout)
+        {
+            let uid = String::from_utf8_lossy(&uid_bytes).trim().to_string();
+            let runtime_dir = format!("/run/user/{}", uid);
+            if std::path::Path::new(&runtime_dir).exists() {
+                std::env::set_var("XDG_RUNTIME_DIR", &runtime_dir);
+                tracing::info!(dir = %runtime_dir, "XDG_RUNTIME_DIR was not set — using uid-based path");
+            } else {
+                tracing::warn!(
+                    dir = %runtime_dir,
+                    "XDG_RUNTIME_DIR not set and /run/user/{uid} does not exist; \
+                     parec may fail to connect to PipeWire"
+                );
+            }
+        }
+    }
+    // Derive PULSE_RUNTIME_PATH from XDG_RUNTIME_DIR if not already set.
+    if std::env::var("PULSE_RUNTIME_PATH").is_err() {
+        if let Ok(xdg) = std::env::var("XDG_RUNTIME_DIR") {
+            std::env::set_var("PULSE_RUNTIME_PATH", format!("{}/pulse", xdg));
+        }
+    }
+
     tracing::info!("╔══════════════════════════════════════╗");
     tracing::info!(
         "║     SoundSync v{}              ║",
