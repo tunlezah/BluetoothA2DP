@@ -259,6 +259,7 @@ fn generate_filter_chain_config(bands: &[EqBand]) -> String {
          \x20\x20\x20\x20\x20 playback.props = {{\n\
          \x20\x20\x20\x20\x20\x20\x20 node.name   = \"effect_output.soundsync-eq\"\n\
          \x20\x20\x20\x20\x20\x20\x20 media.class = \"Stream/Output/Audio\"\n\
+         \x20\x20\x20\x20\x20\x20\x20 node.target = \"soundsync-capture\"\n\
          \x20\x20\x20\x20\x20\x20\x20 audio.channels = 2\n\
          \x20\x20\x20\x20\x20\x20\x20 audio.position = [ FL FR ]\n\
          \x20\x20\x20\x20\x20 }}\n\

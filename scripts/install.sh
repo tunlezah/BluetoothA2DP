@@ -441,35 +441,27 @@ enable_linger() {
     fi
 }
 
-# ── Persist snd-aloop kernel module ──────────────────────────────────────────
+# ── Remove snd-aloop if previously loaded ─────────────────────────────────────
+# snd-aloop creates an ALSA loopback device that WirePlumber treats as a
+# real hardware sink and may prefer over the soundsync-capture null sink.
+# This causes audio to be routed away from soundsync-capture.monitor, breaking
+# both the browser audio stream and the spectrum visualiser.
+# SoundSync uses a PipeWire null sink (soundsync-capture) instead, which is
+# sufficient for headless operation.
 configure_snd_aloop() {
-    header "Configuring ALSA loopback module"
-
     local modules_conf="/etc/modules-load.d/soundsync.conf"
 
-    # Load immediately for this session
-    if ! lsmod 2>/dev/null | grep -q "^snd_aloop"; then
-        info "Loading snd-aloop kernel module..."
-        if sudo modprobe snd-aloop 2>/dev/null; then
-            success "snd-aloop module loaded"
-        else
-            warn "Could not load snd-aloop — ALSA loopback unavailable for this session"
-        fi
-    else
-        success "snd-aloop module already loaded"
+    # Remove the persistence file if we wrote it previously
+    if [ -f "${modules_conf}" ] && grep -q "snd-aloop" "${modules_conf}" 2>/dev/null; then
+        info "Removing snd-aloop persistence (${modules_conf})..."
+        sudo rm -f "${modules_conf}" 2>/dev/null || true
+        success "snd-aloop persistence removed"
     fi
 
-    # Persist across reboots
-    if [ ! -f "${modules_conf}" ]; then
-        info "Persisting snd-aloop across reboots via ${modules_conf}..."
-        if echo "snd-aloop" | sudo tee "${modules_conf}" > /dev/null 2>&1; then
-            success "snd-aloop will load automatically after reboot"
-        else
-            warn "Could not write ${modules_conf} — snd-aloop may not load after reboot"
-            warn "Fix manually: echo 'snd-aloop' | sudo tee ${modules_conf}"
-        fi
-    else
-        success "snd-aloop persistence already configured (${modules_conf})"
+    # Unload the module if it is currently loaded — it competes with soundsync-capture
+    if lsmod 2>/dev/null | grep -q "^snd_aloop"; then
+        info "Unloading snd-aloop kernel module (conflicts with soundsync-capture routing)..."
+        sudo modprobe -r snd-aloop 2>/dev/null || warn "Could not unload snd-aloop — reboot to clear it"
     fi
 }
 
