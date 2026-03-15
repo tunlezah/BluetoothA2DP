@@ -281,7 +281,9 @@ fn ensure_capture_sink() {
                 std::thread::sleep(std::time::Duration::from_secs(1));
             }
         }
-        tracing::warn!("pactl load-module failed after 5 attempts — pipewire-pulse may not be running");
+        tracing::warn!(
+            "pactl load-module failed after 5 attempts — pipewire-pulse may not be running"
+        );
         None
     })();
 

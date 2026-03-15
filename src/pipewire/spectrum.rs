@@ -166,7 +166,11 @@ fn capture_and_analyze(state: AppStateHandle, stop: Arc<AtomicBool>) {
             }
         };
 
-        tracing::info!(pid = child.id(), attempt, "Spectrum: capture process started");
+        tracing::info!(
+            pid = child.id(),
+            attempt,
+            "Spectrum: capture process started"
+        );
 
         let mut stdout = match child.stdout.take() {
             Some(s) => s,
