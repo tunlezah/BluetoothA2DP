@@ -990,3 +990,64 @@ body::before {
 .toast.success { border-color: rgba(48, 209, 88, 0.4);  color: var(--green); }
 .toast.error   { border-color: rgba(255, 69, 58, 0.4);  color: #ff453a; }
 .toast.info    { border-color: rgba(29, 184, 192, 0.4); color: var(--teal); }
+
+/* ── Audio source toggle ──────────────────────────────────────────────────── */
+
+.source-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0 10px;
+  border-bottom: 1px solid var(--glass-border);
+  margin-bottom: 2px;
+  flex-wrap: wrap;
+}
+
+.source-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  min-width: 28px;
+}
+
+.source-toggle {
+  display: flex;
+  border-radius: 10px;
+  border: 1px solid var(--glass-border);
+  overflow: hidden;
+  background: var(--glass-bg);
+}
+
+.source-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 11px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background var(--anim), color var(--anim);
+  white-space: nowrap;
+}
+
+.source-btn:hover {
+  background: var(--glass-bg-hover);
+  color: var(--text);
+}
+
+.source-btn.active {
+  background: var(--teal);
+  color: #fff;
+}
+
+.source-btn.active svg {
+  opacity: 1;
+}
+
+.source-btn svg {
+  opacity: 0.7;
+  flex-shrink: 0;
+}
