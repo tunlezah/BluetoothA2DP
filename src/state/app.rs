@@ -14,6 +14,22 @@ use tokio::sync::{broadcast, RwLock};
 
 use crate::dsp::eq::EqBand;
 
+/// The active audio input source.
+///
+/// Only one source is active at a time.  Switching from `Bluetooth` to
+/// `LineIn` enables a PipeWire loopback from the hardware input; switching
+/// back tears it down.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioSource {
+    /// Bluetooth A2DP (default).  WirePlumber routes connected devices to the
+    /// soundsync-capture sink automatically.
+    #[default]
+    Bluetooth,
+    /// Physical line-in / USB audio / S/PDIF captured via a PipeWire loopback.
+    LineIn,
+}
+
 /// Track metadata received via Bluetooth AVRCP (MediaPlayer1).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TrackInfo {
@@ -184,6 +200,12 @@ pub enum SystemEvent {
     PlaybackStatusChanged { status: PlaybackStatus },
     /// Real-time spectrum analysis data (64 log-spaced bands, 0.0–1.0)
     SpectrumData { bands: Vec<f32> },
+    /// Audio input source changed (bluetooth ↔ line_in)
+    AudioSourceChanged {
+        source: AudioSource,
+        /// PipeWire/PulseAudio source name used for line-in (None for bluetooth)
+        source_name: Option<String>,
+    },
     /// System error occurred
     Error { message: String },
     /// Service is about to shut down — clients should reconnect after a delay.
@@ -196,6 +218,8 @@ pub enum SystemEvent {
         active_device: Option<String>,
         track_info: Option<TrackInfo>,
         playback_status: PlaybackStatus,
+        audio_source: AudioSource,
+        linein_source_name: Option<String>,
     },
 }
 
@@ -306,6 +330,10 @@ pub struct AppState {
     pub track_info: Option<TrackInfo>,
     /// Current playback status from AVRCP
     pub playback_status: PlaybackStatus,
+    /// Currently active audio input source
+    pub audio_source: AudioSource,
+    /// PulseAudio/PipeWire source name used when audio_source == LineIn
+    pub linein_source_name: Option<String>,
 }
 
 impl AppState {
@@ -321,6 +349,8 @@ impl AppState {
             pipewire_ready: false,
             track_info: None,
             playback_status: PlaybackStatus::Unknown,
+            audio_source: AudioSource::Bluetooth,
+            linein_source_name: None,
         }
     }
 
@@ -373,6 +403,8 @@ impl AppState {
             active_device: self.active_device.clone(),
             track_info: self.track_info.clone(),
             playback_status: self.playback_status.clone(),
+            audio_source: self.audio_source.clone(),
+            linein_source_name: self.linein_source_name.clone(),
         }
     }
 }
