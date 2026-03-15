@@ -31,7 +31,7 @@
         </div>
         <div class="app-title">
           <div class="app-name">SoundSync</div>
-          <div class="app-subtitle">Bluetooth Audio &nbsp;<span class="app-version">v1.4.1</span></div>
+          <div class="app-subtitle">Bluetooth Audio &nbsp;<span class="app-version">v1.5.0</span></div>
         </div>
         <!-- Connection status pill -->
         <div id="status-pill" class="status-pill" data-status="unavailable" aria-label="Bluetooth status">
@@ -210,16 +210,6 @@
           </select>
         </div>
 
-        <!-- Low-latency toggle -->
-        <div class="stat-row" style="margin-bottom:4px">
-          <label class="stat-label" for="latency-toggle">Low Latency</label>
-          <label class="toggle-switch" aria-label="Low latency mode">
-            <input type="checkbox" id="latency-toggle"
-                   onchange="SoundSync.setLowLatency(this.checked)" />
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-
         <!-- Stream stats -->
         <div class="stream-stats">
           <div class="stat-row">
@@ -233,14 +223,6 @@
           <div class="stat-row">
             <span class="stat-label">PipeWire</span>
             <span id="stat-pw" class="stat-value inactive">—</span>
-          </div>
-          <div class="stat-row">
-            <span class="stat-label">Startup</span>
-            <span id="stat-latency" class="stat-value inactive">—</span>
-          </div>
-          <div class="stat-row">
-            <span class="stat-label">Buffer</span>
-            <span id="stat-buffer" class="stat-value inactive">—</span>
           </div>
         </div>
 
@@ -320,7 +302,7 @@
           </div>
           <div class="settings-row">
             <span class="settings-label">Version</span>
-            <span class="stat-value" style="font-size:11px">v1.4.1</span>
+            <span class="stat-value" style="font-size:11px">v1.5.0</span>
           </div>
           <button class="settings-btn" id="btn-refresh" onclick="SoundSync.refresh()">Refresh Status</button>
         </div>

@@ -29,7 +29,6 @@ const SoundSync = (() => {
     isStreaming: false,
     theme: 'dark',           // 'dark' | 'light' | 'system'
     streamQuality: 'mp3',    // 'mp3' | 'aac' | 'wav'
-    lowLatency: false,
   };
 
   // ── Spectrum analyser ──────────────────────────────────────────────────────
@@ -212,46 +211,15 @@ const SoundSync = (() => {
 
   function init() {
     initTheme();
-    initLowLatency();
     spectrum.init();
     connectWebSocket();
     fetchStreamQualities();
-    initAudioErrorHandler();
 
     document.addEventListener('keydown', (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
       if (e.key === 's' || e.key === 'S') toggleScan();
       if (e.key === 'Escape') closeSettings();
     });
-  }
-
-  // Attach a persistent error handler to the audio element so server-side
-  // failures (503, empty stream) are surfaced to the user.
-  function initAudioErrorHandler() {
-    const audio = getAudioPlayer();
-    if (!audio) return;
-    audio.addEventListener('error', () => {
-      const btn = document.getElementById('btn-listen');
-      if (btn) btn.textContent = 'Listen';
-      _stopBufferPoll();
-      _playPromise = null;
-      _playStartTime = 0;
-      // Only show a toast when the element has an active src (i.e. we tried to play).
-      if (audio.src) {
-        const code = audio.error ? audio.error.code : 0;
-        const msgs = { 1: 'Aborted', 2: 'Network error', 3: 'Decode error', 4: 'Audio not supported' };
-        showToast('Audio stream error: ' + (msgs[code] || 'Unknown error') + '. Is a Bluetooth device streaming?', 'error');
-      }
-    });
-  }
-
-  function initLowLatency() {
-    const saved = localStorage.getItem('soundsync-low-latency');
-    if (saved === '1') {
-      state.lowLatency = true;
-      const toggle = document.getElementById('latency-toggle');
-      if (toggle) toggle.checked = true;
-    }
   }
 
   // ── WebSocket ──────────────────────────────────────────────────────────────
@@ -511,96 +479,6 @@ const SoundSync = (() => {
     return document.getElementById('audio-player');
   }
 
-  // ── Latency measurement state ─────────────────────────────────────────────
-
-  let _playStartTime = 0;   // Date.now() when play() is called
-  let _bufferPollId = null;  // requestAnimationFrame id for buffer depth polling
-  let _onPlaying = null;     // 'playing' listener ref so _stopBufferPoll can remove it
-
-  function setLowLatency(enabled) {
-    state.lowLatency = enabled;
-    localStorage.setItem('soundsync-low-latency', enabled ? '1' : '0');
-
-    // If currently playing, restart with the new latency setting.
-    const audio = getAudioPlayer();
-    if (audio && !audio.paused) {
-      const stop = () => {
-        audio.pause();
-        audio.src = '';
-        setTimeout(() => toggleBrowserAudio(), 120);
-      };
-      if (_playPromise) {
-        _playPromise.then(stop).catch(() => {});
-        _playPromise = null;
-      } else {
-        stop();
-      }
-    }
-  }
-
-  function _buildStreamUrl() {
-    let url = `/audio/stream?quality=${encodeURIComponent(state.streamQuality)}`;
-    if (state.lowLatency) url += '&latency=low';
-    return url;
-  }
-
-  function _startBufferPoll() {
-    _stopBufferPoll();
-    const audio = getAudioPlayer();
-    if (!audio) return;
-
-    const latencyEl = document.getElementById('stat-latency');
-    const bufferEl = document.getElementById('stat-buffer');
-
-    // Measure startup latency once, on the first `playing` event.
-    _onPlaying = () => {
-      if (_playStartTime > 0) {
-        const ms = Date.now() - _playStartTime;
-        if (latencyEl) {
-          latencyEl.textContent = ms + ' ms';
-          latencyEl.className = 'stat-value';
-        }
-        _playStartTime = 0;
-      }
-      audio.removeEventListener('playing', _onPlaying);
-      _onPlaying = null;
-    };
-    audio.addEventListener('playing', _onPlaying);
-
-    // Poll buffer depth at ~4 Hz via requestAnimationFrame.
-    let lastPoll = 0;
-    const poll = (ts) => {
-      _bufferPollId = requestAnimationFrame(poll);
-      if (ts - lastPoll < 250) return;
-      lastPoll = ts;
-      if (audio.paused || !audio.buffered.length) return;
-
-      const end = audio.buffered.end(audio.buffered.length - 1);
-      const depth = Math.max(0, end - audio.currentTime);
-      if (bufferEl) {
-        bufferEl.textContent = depth.toFixed(1) + ' s';
-        bufferEl.className = 'stat-value' + (depth < 0.5 ? ' inactive' : '');
-      }
-    };
-    _bufferPollId = requestAnimationFrame(poll);
-  }
-
-  function _stopBufferPoll() {
-    if (_bufferPollId) {
-      cancelAnimationFrame(_bufferPollId);
-      _bufferPollId = null;
-    }
-    if (_onPlaying) {
-      const audio = getAudioPlayer();
-      if (audio) audio.removeEventListener('playing', _onPlaying);
-      _onPlaying = null;
-    }
-    const latencyEl = document.getElementById('stat-latency');
-    const bufferEl = document.getElementById('stat-buffer');
-    if (latencyEl) { latencyEl.textContent = '—'; latencyEl.className = 'stat-value inactive'; }
-    if (bufferEl) { bufferEl.textContent = '—'; bufferEl.className = 'stat-value inactive'; }
-  }
-
   function toggleBrowserAudio() {
     const audio = getAudioPlayer();
     const btn   = document.getElementById('btn-listen');
@@ -609,17 +487,14 @@ const SoundSync = (() => {
     if (audio.paused) {
       // Set src fresh each time so the browser opens a new HTTP connection.
       // Do NOT call audio.load() — that aborts the pending play() promise.
-      audio.src = _buildStreamUrl();
-      _playStartTime = Date.now();
+      audio.src = `/audio/stream?quality=${encodeURIComponent(state.streamQuality)}`;
       _playPromise = audio.play();
       if (_playPromise) {
         _playPromise.then(() => {
           _playPromise = null;
           if (btn) btn.textContent = 'Stop';
-          _startBufferPoll();
         }).catch(err => {
           _playPromise = null;
-          _playStartTime = 0;
           // AbortError fires when Stop is clicked before buffering finishes — ignore.
           if (err.name !== 'AbortError') {
             showToast('Could not start audio: ' + err.message, 'error');
@@ -633,7 +508,6 @@ const SoundSync = (() => {
         // Detach src to close the HTTP connection immediately
         audio.src = '';
         if (btn) btn.textContent = 'Listen';
-        _stopBufferPoll();
       };
       // If play() is still pending, wait for it to resolve before pausing.
       // Calling pause() on a pending play() throws in Chrome.
@@ -1053,7 +927,6 @@ const SoundSync = (() => {
     applyName,
     refresh,
     setStreamQuality,
-    setLowLatency,
     get state() { return state; },
   };
 
