@@ -582,6 +582,38 @@ async fn post_stream_quality(
     Ok(Json(serde_json::json!({ "ok": true, "quality": quality })))
 }
 
+/// Resolve the best available PulseAudio/PipeWire source for browser audio capture.
+///
+/// Uses the same three-tier strategy as the spectrum analyser:
+/// 1. BT source node directly (`bluez_input.*` / `bluez_source.*`) — always
+///    has audio, no dependency on WirePlumber sink routing.
+/// 2. `soundsync-capture.monitor` — the null sink we create at startup.
+/// 3. `@DEFAULT_MONITOR@` — last resort fallback.
+fn resolve_audio_source() -> String {
+    let sources = std::process::Command::new("pactl")
+        .args(["list", "short", "sources"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default();
+
+    const BT_PREFIXES: &[&str] = &["bluez_input.", "bluez_source.", "api.bluez5."];
+    for line in sources.lines() {
+        if let Some(name) = line.split_whitespace().nth(1) {
+            if BT_PREFIXES.iter().any(|pfx| name.starts_with(pfx)) {
+                tracing::debug!(source = %name, "Audio stream: capturing from BT source node");
+                return name.to_string();
+            }
+        }
+    }
+
+    if sources.contains("soundsync-capture.monitor") {
+        return "soundsync-capture.monitor".to_string();
+    }
+
+    "@DEFAULT_MONITOR@".to_string()
+}
+
 /// Stream live audio from the PipeWire/PulseAudio default sink to the browser.
 ///
 /// Quality is selected via the `?quality=` query parameter (mp3 | aac | heaac | wav).
@@ -591,8 +623,8 @@ async fn post_stream_quality(
 /// advertises (aac > mp3 > wav).  This replaces the need for unreliable
 /// client-side `canPlayType` detection.
 ///
-/// All strategies capture from `soundsync-capture.monitor` (the sink monitor) so they
-/// match the spectrum analyser capture path.
+/// All strategies capture from the best available source (BT node directly >
+/// soundsync-capture.monitor > @DEFAULT_MONITOR@) via `resolve_audio_source()`.
 async fn get_audio_stream(
     State(state): State<ApiState>,
     Query(params): Query<StreamQueryParams>,
@@ -620,6 +652,11 @@ async fn get_audio_stream(
         (q, enc)
     };
 
+    // Resolve the best capture source once for this request.
+    // BT source node (bluez_input.*) is tried first: it always carries audio
+    // regardless of WirePlumber's sink routing decisions.
+    let capture_device = resolve_audio_source();
+
     match quality.as_str() {
         "heaac" => {
             // HE-AAC (AAC with Spectral Band Replication) at 64 kbps.
@@ -632,71 +669,73 @@ async fn get_audio_stream(
                      (encoder = {}) — falling back to AAC 192k",
                     aac_encoder
                 );
-                // Recursive-style: fall through to standard AAC
                 let cmd = format!(
-                    "parec --device=soundsync-capture.monitor --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
+                    "parec --device={} --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
                      | ffmpeg -hide_banner -loglevel quiet \
                               -fflags +nobuffer \
                               -f s16le -ar 44100 -ac 2 -i pipe:0 \
                               -acodec {} -b:a 192k -f adts -flush_packets 1 pipe:1",
-                    aac_encoder
+                    capture_device, aac_encoder
                 );
                 if let Some(resp) = try_ffmpeg_stream(cmd, "audio/aac").await {
                     return resp;
                 }
-                return wav_stream_response().await;
+                return wav_stream_response(capture_device).await;
             }
-            let cmd =
-                "parec --device=soundsync-capture.monitor --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
+            let cmd = format!(
+                "parec --device={} --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
                  | ffmpeg -hide_banner -loglevel quiet \
                           -fflags +nobuffer \
                           -f s16le -ar 44100 -ac 2 -i pipe:0 \
-                          -acodec libfdk_aac -profile:a aac_he -b:a 64k -f adts -flush_packets 1 pipe:1"
-                    .to_string();
+                          -acodec libfdk_aac -profile:a aac_he -b:a 64k -f adts -flush_packets 1 pipe:1",
+                capture_device
+            );
             if let Some(resp) = try_ffmpeg_stream(cmd, "audio/aac").await {
                 tracing::info!("Audio stream: HE-AAC 64k (libfdk_aac) pipeline started");
                 return resp;
             }
             tracing::warn!("Audio stream: HE-AAC pipeline failed, falling back to WAV");
-            wav_stream_response().await
+            wav_stream_response(capture_device).await
         }
         "aac" => {
             // AAC 192 kbps via ADTS container — streamable, no seeking required.
             // Safari and Chrome both decode audio/aac ADTS streams natively.
             let cmd = format!(
-                "parec --device=soundsync-capture.monitor --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
+                "parec --device={} --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
                  | ffmpeg -hide_banner -loglevel quiet \
                           -fflags +nobuffer \
                           -f s16le -ar 44100 -ac 2 -i pipe:0 \
                           -acodec {} -b:a 192k -f adts -flush_packets 1 pipe:1",
-                aac_encoder
+                capture_device, aac_encoder
             );
             if let Some(resp) = try_ffmpeg_stream(cmd, "audio/aac").await {
                 tracing::info!("Audio stream: AAC 192k ({}) pipeline started", aac_encoder);
                 return resp;
             }
             tracing::warn!("Audio stream: AAC ffmpeg pipeline failed, falling back to WAV");
-            wav_stream_response().await
+            wav_stream_response(capture_device).await
         }
         "wav" => {
             // Lossless PCM — highest quality, fine on LAN (~1.4 Mbps).
             tracing::info!("Audio stream: lossless WAV requested");
-            wav_stream_response().await
+            wav_stream_response(capture_device).await
         }
         _ => {
             // MP3 128 kbps — default, universally supported.
-            let cmd = "parec --device=soundsync-capture.monitor --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
-                       | ffmpeg -hide_banner -loglevel quiet \
-                                -fflags +nobuffer \
-                                -f s16le -ar 44100 -ac 2 -i pipe:0 \
-                                -acodec libmp3lame -b:a 128k -f mp3 -flush_packets 1 pipe:1"
-                .to_string();
+            let cmd = format!(
+                "parec --device={} --format=s16le --rate=44100 --channels=2 --latency-msec=50 \
+                 | ffmpeg -hide_banner -loglevel quiet \
+                          -fflags +nobuffer \
+                          -f s16le -ar 44100 -ac 2 -i pipe:0 \
+                          -acodec libmp3lame -b:a 128k -f mp3 -flush_packets 1 pipe:1",
+                capture_device
+            );
             if let Some(resp) = try_ffmpeg_stream(cmd, "audio/mpeg").await {
                 tracing::info!("Audio stream: MP3 128k pipeline started");
                 return resp;
             }
             tracing::warn!("Audio stream: MP3 ffmpeg pipeline failed, falling back to WAV");
-            wav_stream_response().await
+            wav_stream_response(capture_device).await
         }
     }
 }
@@ -723,10 +762,11 @@ async fn try_ffmpeg_stream(
 ///
 /// Uses a streaming WAV header with data-chunk size 0xFFFF_FFFE so the browser
 /// never considers the download complete.
-async fn wav_stream_response() -> axum::response::Response {
+async fn wav_stream_response(capture_device: String) -> axum::response::Response {
+    let device_arg = format!("--device={}", capture_device);
     let parec = tokio::process::Command::new("parec")
         .args([
-            "--device=soundsync-capture.monitor",
+            &device_arg,
             "--format=s16le",
             "--rate=44100",
             "--channels=2",
