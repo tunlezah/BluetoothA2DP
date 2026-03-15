@@ -217,6 +217,15 @@ do_uninstall() {
         success "Binary removed"
     fi
 
+    # Remove WirePlumber BT config written by the installer
+    local wp_bt_conf="${HOME}/.config/wireplumber/bluetooth.lua.d/51-soundsync-a2dp.lua"
+    if [ -f "${wp_bt_conf}" ]; then
+        rm -f "${wp_bt_conf}"
+        success "WirePlumber BT config removed"
+        # Restart WirePlumber so it reverts to system defaults
+        systemctl --user restart wireplumber 2>/dev/null || true
+    fi
+
     echo ""
     echo -e "${GRN}SoundSync has been uninstalled.${RST}"
     echo "Config files in ${CONFIG_DIR} have been preserved."
@@ -379,7 +388,7 @@ configure_pipewire() {
         success "PipeWire already running"
     else
         info "Starting PipeWire..."
-        systemctl --user start pipewire wireplumber 2>/dev/null || warn "PipeWire not started — may need relogin"
+        systemctl --user start pipewire pipewire-pulse wireplumber 2>/dev/null || warn "PipeWire not started — may need relogin"
     fi
 
     # WirePlumber Bluetooth policy configuration
@@ -456,6 +465,13 @@ configure_snd_aloop() {
         info "Removing snd-aloop persistence (${modules_conf})..."
         sudo rm -f "${modules_conf}" 2>/dev/null || true
         success "snd-aloop persistence removed"
+    fi
+
+    # Remove from /etc/modules if present (another common persistence location)
+    if grep -qE "^snd[-_]aloop" /etc/modules 2>/dev/null; then
+        info "Removing snd-aloop from /etc/modules..."
+        sudo sed -i '/^snd[-_]aloop/d' /etc/modules 2>/dev/null || warn "Could not edit /etc/modules"
+        success "snd-aloop removed from /etc/modules"
     fi
 
     # Unload the module if it is currently loaded — it competes with soundsync-capture
@@ -653,8 +669,8 @@ install_service() {
 [Unit]
 Description=SoundSync — Bluetooth A2DP Sink with DSP EQ
 Documentation=https://github.com/tunlezah/BluetoothA2DP
-After=network.target bluetooth.target pipewire.service
-Wants=pipewire.service wireplumber.service
+After=network.target bluetooth.target pipewire.service wireplumber.service pipewire-pulse.service
+Wants=pipewire.service wireplumber.service pipewire-pulse.service
 Requires=dbus.socket
 # Allow up to 10 restarts within 5 minutes before systemd gives up.
 StartLimitBurst=10

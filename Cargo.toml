@@ -1,6 +1,6 @@
 [package]
 name = "soundsync"
-version = "1.5.3"
+version = "1.5.4"
 edition = "2021"
 description = "SoundSync — Bluetooth A2DP Sink with DSP EQ and Web UI"
 authors = ["SoundSync"]
