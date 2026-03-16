@@ -450,6 +450,104 @@ enable_linger() {
     fi
 }
 
+# ── Check for conflicting Bluetooth audio agents ──────────────────────────────
+# Other daemons that register BlueZ MediaEndpoints will steal the A2DP transport
+# from WirePlumber, causing the bluez_input node to never appear in PipeWire.
+# Known culprits: bluealsa, PulseAudio (when managing BT), custom BT audio servers.
+check_bt_audio_conflicts() {
+    header "Checking for conflicting Bluetooth audio agents"
+
+    local conflicts=()
+    local suspicious=""
+
+    # 1. bluealsa — most common competitor; registers its own A2DP MediaEndpoint
+    if systemctl is-active --quiet bluealsa 2>/dev/null; then
+        conflicts+=("bluealsa (system service is running)")
+    fi
+    if systemctl --user is-active --quiet bluealsa 2>/dev/null; then
+        conflicts+=("bluealsa (user service is running)")
+    fi
+    if pgrep -x bluealsad &>/dev/null && [ "${#conflicts[@]}" -eq 0 ]; then
+        conflicts+=("bluealsad (process running, not via systemd)")
+    fi
+
+    # 2. PulseAudio with Bluetooth modules loaded
+    if pgrep -x pulseaudio &>/dev/null; then
+        if pactl list modules 2>/dev/null | grep -qiE "module-bluetooth-(discover|device|policy)"; then
+            conflicts+=("pulseaudio (Bluetooth modules are loaded)")
+        fi
+    fi
+
+    # 3. Any process whose binary path contains Bluetooth-audio patterns —
+    #    catches custom Python/Node BT audio servers (e.g. /opt/bluetooth-audio/…)
+    suspicious=$(ps -eo pid,args --no-headers 2>/dev/null \
+        | grep -iE '(bluetooth.?audio|bluez.?audio|bt.?audio|a2dp.?sink)' \
+        | grep -v "grep\|soundsync\|wireplumber\|install\.sh" \
+        || true)
+    if [ -n "${suspicious}" ]; then
+        while IFS= read -r line; do
+            local pid cmd
+            pid=$(echo "${line}" | awk '{print $1}')
+            cmd=$(echo "${line}" | awk '{print $2}')
+            conflicts+=("PID ${pid}: ${cmd}")
+        done <<< "${suspicious}"
+    fi
+
+    if [ "${#conflicts[@]}" -eq 0 ]; then
+        success "No conflicting Bluetooth audio agents detected"
+        return
+    fi
+
+    warn "Conflicting Bluetooth audio agent(s) detected:"
+    for c in "${conflicts[@]}"; do
+        warn "  • ${c}"
+    done
+    echo ""
+    warn "These processes register their own BlueZ MediaEndpoint and will steal"
+    warn "the A2DP transport from WirePlumber.  Audio will never appear as a"
+    warn "PipeWire source and SoundSync will not receive audio."
+    echo ""
+
+    if [ -t 0 ]; then
+        echo -en "  ${BLD}Stop conflicting processes now?${RST} [Y/n]: "
+        read -r answer
+        answer="${answer:-Y}"
+        if [[ "${answer}" =~ ^[Yy]$ ]]; then
+            # Stop & disable bluealsa services
+            if systemctl is-active --quiet bluealsa 2>/dev/null; then
+                sudo systemctl stop bluealsa    || true
+                sudo systemctl disable bluealsa || true
+                success "bluealsa system service stopped and disabled"
+            fi
+            if systemctl --user is-active --quiet bluealsa 2>/dev/null; then
+                systemctl --user stop bluealsa    || true
+                systemctl --user disable bluealsa || true
+                success "bluealsa user service stopped and disabled"
+            fi
+
+            # Kill any remaining conflicting processes by PID
+            if [ -n "${suspicious}" ]; then
+                while IFS= read -r line; do
+                    local pid
+                    pid=$(echo "${line}" | awk '{print $1}')
+                    if kill "${pid}" 2>/dev/null; then
+                        success "Stopped PID ${pid}"
+                    else
+                        warn "Could not stop PID ${pid} — try: sudo kill ${pid}"
+                    fi
+                done <<< "${suspicious}"
+            fi
+        else
+            warn "Skipped — SoundSync may not receive audio until these are stopped."
+        fi
+    else
+        warn "Non-interactive mode — skipping automatic stop."
+        warn "Stop conflicting processes manually before connecting a Bluetooth source:"
+        warn "  sudo systemctl disable --now bluealsa   # if bluealsa is the culprit"
+        warn "  kill <PID>                              # for other processes"
+    fi
+}
+
 # ── Remove snd-aloop if previously loaded ─────────────────────────────────────
 # snd-aloop creates an ALSA loopback device that WirePlumber treats as a
 # real hardware sink and may prefer over the soundsync-capture null sink.
@@ -811,6 +909,7 @@ main() {
     check_not_root
     check_os
     validate_port
+    check_bt_audio_conflicts
 
     # Install steps
     install_system_packages
