@@ -36,7 +36,8 @@ use crate::dsp::{
     eq::{EqBand, Equaliser},
     presets::{EqPreset, PresetManager},
 };
-use crate::state::{AppStateHandle, DeviceInfo, SystemEvent};
+use crate::linein::{LineInManager, LineInSource};
+use crate::state::{AppStateHandle, AudioSource, DeviceInfo, SystemEvent};
 
 /// Shared API state passed to every route handler.
 #[derive(Clone)]
@@ -45,6 +46,7 @@ pub struct ApiState {
     pub bt_cmd: tokio::sync::mpsc::Sender<BluetoothCommand>,
     pub eq: Arc<Equaliser>,
     pub presets: Arc<Mutex<PresetManager>>,
+    pub linein: Arc<Mutex<LineInManager>>,
 }
 
 // ── Response types ──────────────────────────────────────────────────────────
@@ -128,6 +130,24 @@ struct StreamQueryParams {
     quality: Option<String>,
 }
 
+#[derive(Serialize)]
+struct AudioSourceResponse {
+    /// Current audio source: "bluetooth" | "line_in"
+    source: AudioSource,
+    /// PulseAudio/PipeWire source name used for line-in (None for bluetooth)
+    source_name: Option<String>,
+    /// All available hardware/virtual audio input sources
+    available_sources: Vec<LineInSource>,
+}
+
+#[derive(Deserialize)]
+struct SetAudioSourceRequest {
+    /// "bluetooth" or "line_in"
+    source: AudioSource,
+    /// Optional PulseAudio source name for line-in (uses system default if omitted)
+    source_name: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct SetQualityRequest {
     quality: String,
@@ -152,12 +172,14 @@ pub fn build_router(
     bt_cmd: tokio::sync::mpsc::Sender<BluetoothCommand>,
     eq: Arc<Equaliser>,
     presets: Arc<Mutex<PresetManager>>,
+    linein: Arc<Mutex<LineInManager>>,
 ) -> Router {
     let api_state = ApiState {
         app: app.clone(),
         bt_cmd,
         eq,
         presets,
+        linein,
     };
 
     Router::new()
@@ -177,6 +199,9 @@ pub fn build_router(
         .route("/api/eq/preset", post(post_apply_preset))
         .route("/api/eq/preset/save", post(post_save_preset))
         .route("/api/eq/preset/:name", delete(delete_preset))
+        // Audio source switching (Bluetooth ↔ Line In)
+        .route("/api/source", get(get_audio_source))
+        .route("/api/source", post(post_audio_source))
         // Audio stream
         .route("/audio/stream", get(get_audio_stream))
         .route("/api/stream/info", get(get_stream_info))
@@ -340,6 +365,119 @@ async fn post_set_name(
         })?;
 
     Ok(Json(serde_json::json!({ "ok": true, "name": name })))
+}
+
+/// Return the current audio source and all available hardware inputs.
+async fn get_audio_source(State(state): State<ApiState>) -> Json<AudioSourceResponse> {
+    let (source, source_name) = {
+        let s = state.app.state.read().await;
+        (s.audio_source.clone(), s.linein_source_name.clone())
+    };
+
+    // Enumerate sources on every call so the UI always sees the current hardware.
+    // This is a fast pactl invocation and does not block the async executor because
+    // it completes in < 50 ms.
+    let available_sources = tokio::task::spawn_blocking(LineInManager::list_sources)
+        .await
+        .unwrap_or_default();
+
+    Json(AudioSourceResponse {
+        source,
+        source_name,
+        available_sources,
+    })
+}
+
+/// Switch the audio input source between Bluetooth and line-in.
+///
+/// - `{ "source": "bluetooth" }` — tears down any loopback and returns to
+///   normal Bluetooth A2DP routing.
+/// - `{ "source": "line_in" }` — loads a PipeWire loopback from
+///   `source_name` (or the system default audio input if omitted) to the
+///   soundsync-capture sink.
+///
+/// Switching is idempotent and can be called any number of times.
+async fn post_audio_source(
+    State(state): State<ApiState>,
+    Json(body): Json<SetAudioSourceRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    match body.source {
+        AudioSource::Bluetooth => {
+            // Tear down line-in loopback (if active) and revert to Bluetooth.
+            {
+                let mut linein = state.linein.lock().await;
+                linein.disable();
+            }
+
+            {
+                let mut s = state.app.state.write().await;
+                s.audio_source = AudioSource::Bluetooth;
+                s.linein_source_name = None;
+            }
+
+            state.app.broadcast(SystemEvent::AudioSourceChanged {
+                source: AudioSource::Bluetooth,
+                source_name: None,
+            });
+
+            tracing::info!("Audio source switched to Bluetooth");
+            Ok(Json(
+                serde_json::json!({ "ok": true, "source": "bluetooth" }),
+            ))
+        }
+
+        AudioSource::LineIn => {
+            let source_name = body.source_name.clone();
+
+            // Enable the loopback — this tears down any previous loopback first,
+            // ensuring clean state on repeated switches.
+            let result = {
+                let mut linein = state.linein.lock().await;
+                linein.enable(source_name.as_deref())
+            };
+
+            match result {
+                Ok(()) => {
+                    // Persist the chosen source name so the snapshot reflects it.
+                    {
+                        let mut s = state.app.state.write().await;
+                        s.audio_source = AudioSource::LineIn;
+                        s.linein_source_name = source_name.clone();
+                    }
+
+                    state.app.broadcast(SystemEvent::AudioSourceChanged {
+                        source: AudioSource::LineIn,
+                        source_name: source_name.clone(),
+                    });
+
+                    // Fire StreamStarted so the spectrum analyser activates immediately.
+                    state.app.broadcast(SystemEvent::StreamStarted {
+                        address: "line_in".to_string(),
+                    });
+
+                    let name_label = source_name
+                        .as_deref()
+                        .unwrap_or("default source")
+                        .to_string();
+                    tracing::info!(source = %name_label, "Audio source switched to Line In");
+
+                    Ok(Json(serde_json::json!({
+                        "ok": true,
+                        "source": "line_in",
+                        "source_name": source_name,
+                    })))
+                }
+
+                Err(e) => {
+                    tracing::error!("Failed to enable line-in loopback: {}", e);
+                    Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        ApiError::new(format!("Failed to enable line-in: {}", e)),
+                    ))
+                }
+            }
+        }
+    }
 }
 
 async fn get_eq(State(state): State<ApiState>) -> Json<EqResponse> {

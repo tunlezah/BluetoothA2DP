@@ -12,6 +12,7 @@
 mod api;
 mod bluetooth;
 mod dsp;
+mod linein;
 mod logging;
 mod pipewire;
 mod state;
@@ -26,6 +27,7 @@ use tokio::sync::Mutex;
 
 use crate::api::build_router;
 use crate::bluetooth::BluetoothManager;
+use crate::linein::LineInManager;
 use crate::pipewire::PipeWireManager;
 use crate::state::{AppStateHandle, Config};
 
@@ -141,6 +143,9 @@ async fn main() -> anyhow::Result<()> {
     // Load EQ presets
     let presets = Arc::new(Mutex::new(PresetManager::new()));
 
+    // Initialise line-in manager (shared between API handler and potential future tasks)
+    let linein_manager = Arc::new(Mutex::new(LineInManager::new()));
+
     // Initialise Bluetooth manager
     let bt_manager = BluetoothManager::new(state.clone(), &adapter_name);
     let bt_cmd_tx = bt_manager.command_sender();
@@ -175,7 +180,13 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Build the web router
-    let router = build_router(state.clone(), bt_cmd_tx, equaliser.clone(), presets.clone());
+    let router = build_router(
+        state.clone(),
+        bt_cmd_tx,
+        equaliser.clone(),
+        presets.clone(),
+        linein_manager.clone(),
+    );
 
     // Start Bluetooth manager in an async task
     tokio::spawn(async move {

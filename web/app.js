@@ -29,6 +29,10 @@ const SoundSync = (() => {
     isStreaming: false,
     theme: 'dark',           // 'dark' | 'light' | 'system'
     streamQuality: 'mp3',    // 'mp3' | 'aac' | 'wav'
+    // Audio source
+    audioSource: 'bluetooth',      // 'bluetooth' | 'line_in'
+    lineInSourceName: null,        // selected source name or null (= default)
+    lineInSources: [],             // available sources from /api/source
   };
 
   // ── Spectrum analyser ──────────────────────────────────────────────────────
@@ -214,6 +218,7 @@ const SoundSync = (() => {
     spectrum.init();
     connectWebSocket();
     fetchStreamQualities();
+    fetchAudioSource();
 
     document.addEventListener('keydown', (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
@@ -303,6 +308,10 @@ const SoundSync = (() => {
         updatePlaybackStatus(event.data.status);
         break;
 
+      case 'audio_source_changed':
+        applyAudioSource(event.data.source, event.data.source_name);
+        break;
+
       case 'error':
         showToast(event.data.message, 'error');
         break;
@@ -335,6 +344,10 @@ const SoundSync = (() => {
 
     if (data.playback_status) {
       updatePlaybackStatus(data.playback_status);
+    }
+
+    if (data.audio_source) {
+      applyAudioSource(data.audio_source, data.linein_source_name || null);
     }
 
     updatePlaybackPanel();
@@ -393,6 +406,140 @@ const SoundSync = (() => {
         }
       }
     } catch (_) {}
+  }
+
+  // ── Audio source (Bluetooth / Line In) ────────────────────────────────────
+
+  // Fetch current source and available line-in sources from the server.
+  async function fetchAudioSource() {
+    try {
+      const data = await apiFetch('/api/source');
+      state.lineInSources = data.available_sources || [];
+      applyAudioSource(data.source, data.source_name);
+      populateLineInSelector(data.available_sources || []);
+    } catch (_) {}
+  }
+
+  // Switch to the given source ('bluetooth' or 'line_in').
+  // Called by the toggle buttons in the playback panel.
+  async function setAudioSource(source) {
+    if (source === state.audioSource) return;
+
+    const body = { source };
+    if (source === 'line_in' && state.lineInSourceName) {
+      body.source_name = state.lineInSourceName;
+    }
+
+    try {
+      await apiFetch('/api/source', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      // The server will broadcast AudioSourceChanged; applyAudioSource() will
+      // update the UI.  We also update local state immediately for responsiveness.
+      applyAudioSource(source, body.source_name || null);
+      const label = source === 'line_in' ? 'Line In' : 'Bluetooth';
+      showToast(`Switched to ${label}`, 'info');
+    } catch (_) {}
+  }
+
+  // Change the selected line-in hardware source and re-enable the loopback.
+  async function setLineInSource(sourceName) {
+    state.lineInSourceName = sourceName || null;
+    if (state.audioSource !== 'line_in') return;
+
+    try {
+      await apiFetch('/api/source', {
+        method: 'POST',
+        body: JSON.stringify({
+          source: 'line_in',
+          source_name: state.lineInSourceName,
+        }),
+      });
+    } catch (_) {}
+  }
+
+  // Apply an audio source change to the UI — called from both WebSocket events
+  // and direct API responses so the UI always stays in sync.
+  function applyAudioSource(source, sourceNameOrNull) {
+    state.audioSource = source;
+    state.lineInSourceName = sourceNameOrNull || null;
+
+    const btBtn     = document.getElementById('btn-source-bt');
+    const liBtn     = document.getElementById('btn-source-linein');
+    const liSelect  = document.getElementById('linein-source-select');
+    const codecEl   = document.getElementById('stat-codec');
+    const noticeEl  = document.getElementById('audio-notice-text');
+
+    const isLineIn = source === 'line_in';
+
+    if (btBtn)    { btBtn.classList.toggle('active', !isLineIn); btBtn.setAttribute('aria-pressed', String(!isLineIn)); }
+    if (liBtn)    { liBtn.classList.toggle('active', isLineIn);  liBtn.setAttribute('aria-pressed', String(isLineIn)); }
+
+    // Show/hide the hardware source selector
+    if (liSelect) {
+      liSelect.style.display = isLineIn ? '' : 'none';
+      if (isLineIn && state.lineInSourceName) {
+        liSelect.value = state.lineInSourceName;
+      }
+    }
+
+    // Update codec stat to reflect the active source
+    if (codecEl) {
+      if (isLineIn) {
+        codecEl.textContent = 'Line In \u2192 PCM';
+      } else {
+        // Restore from stream info on next fetch
+        fetchStreamInfo();
+      }
+    }
+
+    // Update the audio notice text
+    if (noticeEl) {
+      if (isLineIn) {
+        noticeEl.innerHTML = 'Line-in streams to your <strong>browser</strong>';
+      } else {
+        noticeEl.innerHTML = 'Audio streams to your <strong>browser</strong>';
+      }
+    }
+
+    // Update the source device display in the playback panel
+    updatePlaybackPanel();
+  }
+
+  // Populate the line-in source <select> with available hardware sources.
+  function populateLineInSelector(sources) {
+    const sel = document.getElementById('linein-source-select');
+    if (!sel) return;
+
+    // Keep the "Default source" option, replace the rest
+    while (sel.options.length > 1) sel.remove(1);
+
+    sources.forEach(src => {
+      if (src.is_monitor) return; // skip monitors; they are listed separately
+      const opt = document.createElement('option');
+      opt.value = src.name;
+      opt.textContent = src.description || src.name;
+      sel.appendChild(opt);
+    });
+
+    // Add a divider-like group for monitors if any are present
+    const monitors = sources.filter(s => s.is_monitor);
+    if (monitors.length) {
+      const grp = document.createElement('optgroup');
+      grp.label = 'Monitors';
+      monitors.forEach(src => {
+        const opt = document.createElement('option');
+        opt.value = src.name;
+        opt.textContent = src.description || src.name;
+        grp.appendChild(opt);
+      });
+      sel.appendChild(grp);
+    }
+
+    if (state.lineInSourceName) {
+      sel.value = state.lineInSourceName;
+    }
   }
 
   // ── API helpers ────────────────────────────────────────────────────────────
@@ -927,6 +1074,8 @@ const SoundSync = (() => {
     applyName,
     refresh,
     setStreamQuality,
+    setAudioSource,
+    setLineInSource,
     get state() { return state; },
   };
 
