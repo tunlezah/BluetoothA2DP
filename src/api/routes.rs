@@ -857,7 +857,7 @@ async fn wav_stream_response(capture_device: String) -> axum::response::Response
 
             axum::response::Response::builder()
                 .status(StatusCode::OK)
-                .header("Content-Type", "audio/wav")
+                .header("Content-Type", "audio/x-wav")
                 .header("Cache-Control", "no-cache, no-store")
                 .body(axum::body::Body::from_stream(body_stream))
                 .unwrap()
