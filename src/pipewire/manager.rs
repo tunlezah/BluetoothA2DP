@@ -393,6 +393,9 @@ async fn advance_devices_to_audio_active(state: &AppStateHandle) {
             .filter(|d| {
                 d.state == DeviceState::PipewireSourceReady
                     || d.state == DeviceState::ProfileNegotiated
+                    // Also include Connected devices whose A2DP was confirmed but
+                    // advance_devices_to_source_ready hasn't run yet (timing gap).
+                    || (d.state == DeviceState::Connected && d.has_a2dp)
             })
             .map(|d| (d.address.clone(), d.name.clone()))
             .collect()

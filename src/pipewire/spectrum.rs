@@ -118,34 +118,13 @@ fn start_capture_thread(state: AppStateHandle) -> Arc<AtomicBool> {
 // ── Blocking capture + FFT loop ───────────────────────────────────────────────
 
 fn capture_and_analyze(state: AppStateHandle, stop: Arc<AtomicBool>) {
-    let mut child = match spawn_capture_process() {
-        Some(c) => c,
-        None => {
-            tracing::warn!(
-                "Spectrum: no capture tool available (install pulseaudio-utils or pipewire-audio)"
-            );
-            return;
-        }
-    };
-
-    tracing::info!("Spectrum: capture process started (pid {})", child.id());
-
-    let mut stdout = match child.stdout.take() {
-        Some(s) => s,
-        None => {
-            let _ = child.kill();
-            return;
-        }
-    };
-
-    // Pre-compute Hanning window coefficients
+    // Pre-compute Hanning window coefficients (reused across retries)
     let window: Vec<f32> = (0..FFT_SIZE)
         .map(|i| {
             0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / (FFT_SIZE - 1) as f32).cos())
         })
         .collect();
 
-    // Pre-compute log-band bin boundaries (reused every iteration)
     let band_bins = precompute_band_bins(NUM_BANDS);
 
     let mut planner = FftPlanner::<f32>::new();
@@ -153,75 +132,131 @@ fn capture_and_analyze(state: AppStateHandle, stop: Arc<AtomicBool>) {
     let scratch_len = fft.get_inplace_scratch_len();
     let mut scratch: Vec<Complex<f32>> = vec![Complex::new(0.0, 0.0); scratch_len];
     let mut fft_buf: Vec<Complex<f32>> = vec![Complex::new(0.0, 0.0); FFT_SIZE];
-
-    // Raw sample bytes: FFT_SIZE f32 samples = FFT_SIZE * 4 bytes
     let mut raw = vec![0u8; FFT_SIZE * 4];
-
-    // Smoothed output (exponential moving average)
     let mut smoothed = vec![0.0f32; NUM_BANDS];
 
-    loop {
+    // Retry loop: if parec fails (e.g. PipeWire not ready yet), wait and try again.
+    let mut retry_delay = Duration::from_secs(2);
+    for attempt in 0..=5 {
         if stop.load(Ordering::SeqCst) {
-            break;
+            return;
         }
 
-        // Blocking read — fills the entire window
-        if stdout.read_exact(&mut raw).is_err() {
-            break; // subprocess died or was killed
-        }
-
-        if stop.load(Ordering::SeqCst) {
-            break;
-        }
-
-        // Decode f32-LE samples and apply Hanning window
-        for (i, chunk) in raw.chunks_exact(4).enumerate() {
-            let s = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-            fft_buf[i] = Complex::new(s * window[i], 0.0);
-        }
-
-        // In-place forward FFT
-        fft.process_with_scratch(&mut fft_buf, &mut scratch);
-
-        // Compute magnitude of positive-frequency bins only, normalised by N/2
-        // so a full-scale sine gives 1.0.
-        let normalization = 2.0 / FFT_SIZE as f32;
-        let magnitudes: Vec<f32> = fft_buf[..FFT_SIZE / 2]
-            .iter()
-            .map(|c| (c.re * c.re + c.im * c.im).sqrt() * normalization)
-            .collect();
-
-        // Accumulate per-band peak magnitudes
-        let mut bands = vec![0.0f32; NUM_BANDS];
-        for (band_idx, &(bin_lo, bin_hi)) in band_bins.iter().enumerate() {
-            let peak = magnitudes[bin_lo..bin_hi]
-                .iter()
-                .cloned()
-                .fold(0.0_f32, f32::max);
-
-            // Convert to dB and normalise to [0, 1]
-            let db = 20.0 * peak.max(1e-10).log10();
-            bands[band_idx] = ((db.clamp(-80.0, 0.0) + 80.0) / 80.0).max(0.0);
-        }
-
-        // Exponential moving average — attack fast, decay slightly slower
-        for (s, b) in smoothed.iter_mut().zip(bands.iter()) {
-            if *b > *s {
-                *s = SMOOTH_ALPHA * b + (1.0 - SMOOTH_ALPHA) * *s;
-            } else {
-                // Decay a little slower for visual appeal
-                *s = (SMOOTH_ALPHA * 0.6) * b + (1.0 - SMOOTH_ALPHA * 0.6) * *s;
+        if attempt > 0 {
+            tracing::info!(
+                attempt,
+                delay_secs = retry_delay.as_secs(),
+                "Spectrum: retrying parec after failure"
+            );
+            std::thread::sleep(retry_delay);
+            retry_delay = (retry_delay * 2).min(Duration::from_secs(30));
+            if stop.load(Ordering::SeqCst) {
+                return;
             }
         }
 
-        state.broadcast(SystemEvent::SpectrumData {
-            bands: smoothed.clone(),
-        });
+        let mut child = match spawn_capture_process() {
+            Some(c) => c,
+            None => {
+                tracing::warn!(
+                    "Spectrum: no capture tool available \
+                     (install pulseaudio-utils or pipewire-audio)"
+                );
+                return; // No tools installed — no point retrying
+            }
+        };
+
+        tracing::info!(
+            pid = child.id(),
+            attempt,
+            "Spectrum: capture process started"
+        );
+
+        let mut stdout = match child.stdout.take() {
+            Some(s) => s,
+            None => {
+                let _ = child.kill();
+                continue;
+            }
+        };
+        // Keep stderr so we can log the failure reason when parec exits early.
+        let mut stderr_pipe = child.stderr.take();
+
+        // ── FFT capture loop ─────────────────────────────────────────────────
+        loop {
+            if stop.load(Ordering::SeqCst) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return;
+            }
+
+            if stdout.read_exact(&mut raw).is_err() {
+                // parec exited — log its stderr to help diagnose the cause.
+                if let Some(ref mut sp) = stderr_pipe {
+                    let mut err_msg = String::new();
+                    let _ = std::io::Read::read_to_string(sp, &mut err_msg);
+                    if !err_msg.is_empty() {
+                        tracing::warn!(
+                            stderr = %err_msg.trim(),
+                            "Spectrum: parec exited — stderr output above may explain why"
+                        );
+                    }
+                }
+                break; // Break inner loop → retry outer loop
+            }
+
+            if stop.load(Ordering::SeqCst) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return;
+            }
+
+            // Decode f32-LE samples and apply Hanning window
+            for (i, chunk) in raw.chunks_exact(4).enumerate() {
+                let s = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                fft_buf[i] = Complex::new(s * window[i], 0.0);
+            }
+
+            fft.process_with_scratch(&mut fft_buf, &mut scratch);
+
+            let normalization = 2.0 / FFT_SIZE as f32;
+            let magnitudes: Vec<f32> = fft_buf[..FFT_SIZE / 2]
+                .iter()
+                .map(|c| (c.re * c.re + c.im * c.im).sqrt() * normalization)
+                .collect();
+
+            let mut bands = vec![0.0f32; NUM_BANDS];
+            for (band_idx, &(bin_lo, bin_hi)) in band_bins.iter().enumerate() {
+                let peak = magnitudes[bin_lo..bin_hi]
+                    .iter()
+                    .cloned()
+                    .fold(0.0_f32, f32::max);
+                let db = 20.0 * peak.max(1e-10).log10();
+                bands[band_idx] = ((db.clamp(-80.0, 0.0) + 80.0) / 80.0).max(0.0);
+            }
+
+            for (s, b) in smoothed.iter_mut().zip(bands.iter()) {
+                if *b > *s {
+                    *s = SMOOTH_ALPHA * b + (1.0 - SMOOTH_ALPHA) * *s;
+                } else {
+                    *s = (SMOOTH_ALPHA * 0.6) * b + (1.0 - SMOOTH_ALPHA * 0.6) * *s;
+                }
+            }
+
+            state.broadcast(SystemEvent::SpectrumData {
+                bands: smoothed.clone(),
+            });
+        }
+
+        let _ = child.kill();
+        let _ = child.wait();
+        tracing::warn!(attempt, "Spectrum: capture process stopped unexpectedly");
     }
 
-    let _ = child.kill();
-    let _ = child.wait();
-    tracing::info!("Spectrum: capture process stopped");
+    tracing::error!(
+        "Spectrum: parec failed after all retries. \
+         Check that pipewire-pulse is running and XDG_RUNTIME_DIR is set correctly."
+    );
 }
 
 // ── Helper functions ──────────────────────────────────────────────────────────
@@ -280,15 +315,17 @@ fn spawn_capture_process() -> Option<Child> {
             "--latency-msec=20",
         ])
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped()) // captured so callers can log failure reason
         .spawn();
 
-    if let Ok(child) = parec {
-        return Some(child);
+    match parec {
+        Ok(child) => return Some(child),
+        Err(e) => {
+            tracing::warn!(error = %e, "Spectrum: parec spawn failed — trying pw-cat fallback");
+        }
     }
 
     // pw-cat fallback: PipeWire native record.
-    // Also prefer the explicit monitor; fall back to @DEFAULT_SINK@.monitor.
     let pw_target = if device == "soundsync-capture.monitor" {
         "soundsync-capture.monitor".to_string()
     } else {
@@ -305,7 +342,7 @@ fn spawn_capture_process() -> Option<Child> {
             "-",
         ])
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn();
 
     pw_cat.ok()

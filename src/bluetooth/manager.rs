@@ -495,6 +495,23 @@ impl BluetoothManager {
                                     // Defer active_device clear
                                     clear_active = Some(addr.clone());
                                 }
+                            } else if is_connected && !existing.has_a2dp && new_info.has_a2dp {
+                                // A2DP UUID arrived after the initial connection was detected
+                                // (BlueZ completes SDP asynchronously — the first Connected poll
+                                // may see the device before UUIDs are populated).
+                                // Advance the device to ProfileNegotiated so the audio pipeline
+                                // can start.
+                                tracing::info!(
+                                    addr = %addr,
+                                    "A2DP profile detected on already-connected device — \
+                                     advancing to ProfileNegotiated"
+                                );
+                                existing.has_a2dp = true;
+                                if existing.state == DeviceState::Connected {
+                                    existing.transition(DeviceState::ProfileNegotiated);
+                                    set_active = Some(addr.clone());
+                                    any_changed = true;
+                                }
                             }
 
                             // Update RSSI

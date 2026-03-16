@@ -62,6 +62,39 @@ async fn main() -> anyhow::Result<()> {
     std::env::set_var("LOG_FORMAT", &args.log_format);
     logging::init();
 
+    // Ensure XDG_RUNTIME_DIR is set so parec/pactl can find the PipeWire socket.
+    // This is required when soundsync is launched by a process that didn't inherit
+    // the variable (e.g. a systemd service without the env override, or a custom
+    // init script).  We derive the path from the running user's UID.
+    if std::env::var("XDG_RUNTIME_DIR").is_err() {
+        if let Some(uid_bytes) = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| o.stdout)
+        {
+            let uid = String::from_utf8_lossy(&uid_bytes).trim().to_string();
+            let runtime_dir = format!("/run/user/{}", uid);
+            if std::path::Path::new(&runtime_dir).exists() {
+                std::env::set_var("XDG_RUNTIME_DIR", &runtime_dir);
+                tracing::info!(dir = %runtime_dir, "XDG_RUNTIME_DIR was not set — using uid-based path");
+            } else {
+                tracing::warn!(
+                    dir = %runtime_dir,
+                    "XDG_RUNTIME_DIR not set and /run/user/{uid} does not exist; \
+                     parec may fail to connect to PipeWire"
+                );
+            }
+        }
+    }
+    // Derive PULSE_RUNTIME_PATH from XDG_RUNTIME_DIR if not already set.
+    if std::env::var("PULSE_RUNTIME_PATH").is_err() {
+        if let Ok(xdg) = std::env::var("XDG_RUNTIME_DIR") {
+            std::env::set_var("PULSE_RUNTIME_PATH", format!("{}/pulse", xdg));
+        }
+    }
+
     tracing::info!("╔══════════════════════════════════════╗");
     tracing::info!(
         "║     SoundSync v{}              ║",
@@ -191,37 +224,71 @@ async fn main() -> anyhow::Result<()> {
 /// `wpctl set-default` (the WirePlumber-native command) which persists through
 /// the session.  Both are attempted; failure of either is non-fatal.
 ///
+/// Retries up to 5 times with 1-second delays to handle the case where
+/// pipewire-pulse is still starting when the service launches.
+///
 /// The call is best-effort — if `pactl` is absent the app continues without it.
 fn ensure_capture_sink() {
-    // ── Step 1: create the null sink (idempotent — ignore "already loaded") ──
-    let load = std::process::Command::new("pactl")
-        .args([
-            "load-module",
-            "module-null-sink",
-            "sink_name=soundsync-capture",
-            "sink_properties=device.description=SoundSync-Capture",
-        ])
-        .output();
+    // ── Step 1: create the null sink — retry until pipewire-pulse is ready ───
+    // pipewire-pulse may still be initialising when soundsync starts (even with
+    // After=pipewire-pulse.service) so we retry a few times before giving up.
+    let load = (|| {
+        for attempt in 1..=5u8 {
+            let result = std::process::Command::new("pactl")
+                .args([
+                    "load-module",
+                    "module-null-sink",
+                    "sink_name=soundsync-capture",
+                    "sink_properties=device.description=SoundSync-Capture",
+                ])
+                .output();
 
-    match load {
-        Ok(out) if out.status.success() => {
-            tracing::info!("Created null sink 'soundsync-capture'");
+            match result {
+                Ok(out) if out.status.success() => {
+                    tracing::info!("Created null sink 'soundsync-capture'");
+                    return Some(());
+                }
+                Ok(out) => {
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    // "Module already loaded" is not an error — the sink exists.
+                    if stderr.contains("Module initialization failed")
+                        || stderr.contains("already loaded")
+                        || out.status.code() == Some(0)
+                    {
+                        tracing::debug!(
+                            stderr = %stderr.trim(),
+                            "pactl load-module: sink may already exist"
+                        );
+                        return Some(());
+                    }
+                    tracing::debug!(
+                        attempt,
+                        stderr = %stderr.trim(),
+                        "pactl load-module failed — pipewire-pulse may still be starting"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "pactl not found — cannot create capture sink: {}. \
+                         Install pulseaudio-utils or pipewire-pulse.",
+                        e
+                    );
+                    return None;
+                }
+            }
+
+            if attempt < 5 {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
         }
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            tracing::debug!(
-                stderr = %stderr.trim(),
-                "pactl load-module non-zero (sink may already exist)"
-            );
-        }
-        Err(e) => {
-            tracing::warn!(
-                "pactl not found — cannot create capture sink: {}. \
-                 Install pulseaudio-utils or pipewire-pulse.",
-                e
-            );
-            return;
-        }
+        tracing::warn!(
+            "pactl load-module failed after 5 attempts — pipewire-pulse may not be running"
+        );
+        None
+    })();
+
+    if load.is_none() {
+        return;
     }
 
     // ── Step 2: verify the sink actually exists ───────────────────────────────
