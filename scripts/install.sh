@@ -581,6 +581,13 @@ configure_snd_aloop() {
 
 # ── Find or build binary ───────────────────────────────────────────────────────
 build_binary() {
+    # Check for a pre-built binary in the repo root first
+    if [ -f "${REPO_DIR}/soundsync" ]; then
+        BINARY_PATH="${REPO_DIR}/soundsync"
+        success "Pre-built binary found at ${BINARY_PATH} — skipping build"
+        return 0
+    fi
+
     header "Building SoundSync"
 
     # Ensure cargo is in PATH
