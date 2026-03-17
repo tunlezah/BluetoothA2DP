@@ -177,6 +177,10 @@ pub fn build_router(
         .route("/api/eq/preset", post(post_apply_preset))
         .route("/api/eq/preset/save", post(post_save_preset))
         .route("/api/eq/preset/:name", delete(delete_preset))
+        // Line-in
+        .route("/api/line-in/status", get(get_line_in_status))
+        .route("/api/line-in/activate", post(post_line_in_activate))
+        .route("/api/line-in/deactivate", post(post_line_in_deactivate))
         // Audio stream
         .route("/audio/stream", get(get_audio_stream))
         .route("/api/stream/info", get(get_stream_info))
@@ -582,14 +586,99 @@ async fn post_stream_quality(
     Ok(Json(serde_json::json!({ "ok": true, "quality": quality })))
 }
 
+// ── Line-in endpoints ────────────────────────────────────────────────────────
+
+/// Return line-in status: whether a line-in source is available and whether it's active.
+async fn get_line_in_status(State(state): State<ApiState>) -> Json<serde_json::Value> {
+    let s = state.app.state.read().await;
+    Json(serde_json::json!({
+        "available": s.line_in_source.is_some(),
+        "active": s.line_in_active,
+        "source": s.line_in_source,
+    }))
+}
+
+/// Activate line-in as the audio source. Disconnects all connected Bluetooth devices.
+async fn post_line_in_activate(
+    State(state): State<ApiState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    // Check if line-in source is available
+    let source = {
+        let s = state.app.state.read().await;
+        s.line_in_source.clone()
+    };
+
+    if source.is_none() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            ApiError::new("No line-in source detected"),
+        ));
+    }
+
+    // Disconnect all connected Bluetooth devices
+    let connected_addresses: Vec<String> = {
+        let s = state.app.state.read().await;
+        s.devices
+            .values()
+            .filter(|d| d.state.is_connected())
+            .map(|d| d.address.clone())
+            .collect()
+    };
+
+    for address in &connected_addresses {
+        let _ = state
+            .bt_cmd
+            .send(BluetoothCommand::Disconnect {
+                address: address.clone(),
+            })
+            .await;
+    }
+
+    // Activate line-in
+    {
+        let mut s = state.app.state.write().await;
+        s.line_in_active = true;
+        s.active_device = None;
+    }
+
+    state.app.broadcast(SystemEvent::LineInActivated);
+    tracing::info!("Line-in activated, disconnected {} BT device(s)", connected_addresses.len());
+
+    Ok(Json(serde_json::json!({ "ok": true, "source": source })))
+}
+
+/// Deactivate line-in as the audio source.
+async fn post_line_in_deactivate(
+    State(state): State<ApiState>,
+) -> Json<serde_json::Value> {
+    {
+        let mut s = state.app.state.write().await;
+        s.line_in_active = false;
+    }
+
+    state.app.broadcast(SystemEvent::LineInDeactivated);
+    tracing::info!("Line-in deactivated");
+
+    Json(serde_json::json!({ "ok": true }))
+}
+
 /// Resolve the best available PulseAudio/PipeWire source for browser audio capture.
 ///
-/// Uses the same three-tier strategy as the spectrum analyser:
+/// Priority order:
+/// 0. Line-in source (when line-in is active and a source was detected).
 /// 1. BT source node directly (`bluez_input.*` / `bluez_source.*`) — always
 ///    has audio, no dependency on WirePlumber sink routing.
 /// 2. `soundsync-capture.monitor` — the null sink we create at startup.
 /// 3. `@DEFAULT_MONITOR@` — last resort fallback.
-fn resolve_audio_source() -> String {
+fn resolve_audio_source(line_in_active: bool, line_in_source: Option<&str>) -> String {
+    // Priority 0: line-in when active
+    if line_in_active {
+        if let Some(src) = line_in_source {
+            tracing::debug!(source = %src, "Audio stream: capturing from line-in source");
+            return src.to_string();
+        }
+    }
+
     let sources = std::process::Command::new("pactl")
         .args(["list", "short", "sources"])
         .output()
@@ -653,9 +742,14 @@ async fn get_audio_stream(
     };
 
     // Resolve the best capture source once for this request.
-    // BT source node (bluez_input.*) is tried first: it always carries audio
-    // regardless of WirePlumber's sink routing decisions.
-    let capture_device = resolve_audio_source();
+    // Line-in is preferred when active; otherwise BT source node (bluez_input.*)
+    // is tried first: it always carries audio regardless of WirePlumber's sink
+    // routing decisions.
+    let (line_in_active, line_in_source) = {
+        let s = state.app.state.read().await;
+        (s.line_in_active, s.line_in_source.clone())
+    };
+    let capture_device = resolve_audio_source(line_in_active, line_in_source.as_deref());
 
     match quality.as_str() {
         "heaac" => {

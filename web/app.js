@@ -29,6 +29,8 @@ const SoundSync = (() => {
     isStreaming: false,
     theme: 'dark',           // 'dark' | 'light' | 'system'
     streamQuality: 'mp3',    // 'mp3' | 'aac' | 'wav'
+    lineInAvailable: false,
+    lineInActive: false,
   };
 
   // ── Spectrum analyser ──────────────────────────────────────────────────────
@@ -214,6 +216,7 @@ const SoundSync = (() => {
     spectrum.init();
     connectWebSocket();
     fetchStreamQualities();
+    fetchLineInStatus();
 
     document.addEventListener('keydown', (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
@@ -303,6 +306,20 @@ const SoundSync = (() => {
         updatePlaybackStatus(event.data.status);
         break;
 
+      case 'line_in_activated':
+        state.lineInActive = true;
+        renderDeviceList();
+        updatePlaybackPanel();
+        showToast('Line-in activated', 'info');
+        break;
+
+      case 'line_in_deactivated':
+        state.lineInActive = false;
+        renderDeviceList();
+        updatePlaybackPanel();
+        showToast('Line-in deactivated', 'info');
+        break;
+
       case 'error':
         showToast(event.data.message, 'error');
         break;
@@ -335,6 +352,13 @@ const SoundSync = (() => {
 
     if (data.playback_status) {
       updatePlaybackStatus(data.playback_status);
+    }
+
+    if (data.line_in_available !== undefined) {
+      state.lineInAvailable = data.line_in_available;
+    }
+    if (data.line_in_active !== undefined) {
+      state.lineInActive = data.line_in_active;
     }
 
     updatePlaybackPanel();
@@ -461,6 +485,34 @@ const SoundSync = (() => {
         method: 'POST',
         body: JSON.stringify({ address }),
       });
+    } catch (_) {}
+  }
+
+  async function activateLineIn() {
+    showToast('Activating line-in…', 'info');
+    try {
+      await apiFetch('/api/line-in/activate', { method: 'POST' });
+      state.lineInActive = true;
+      renderDeviceList();
+      updatePlaybackPanel();
+    } catch (_) {}
+  }
+
+  async function deactivateLineIn() {
+    try {
+      await apiFetch('/api/line-in/deactivate', { method: 'POST' });
+      state.lineInActive = false;
+      renderDeviceList();
+      updatePlaybackPanel();
+    } catch (_) {}
+  }
+
+  async function fetchLineInStatus() {
+    try {
+      const data = await apiFetch('/api/line-in/status');
+      state.lineInAvailable = data.available;
+      state.lineInActive = data.active;
+      renderDeviceList();
     } catch (_) {}
   }
 
@@ -825,8 +877,10 @@ const SoundSync = (() => {
     if (!list) return;
 
     const devices = state.devices;
+    const hasLineIn = state.lineInAvailable;
+    const hasDevices = devices.length > 0 || hasLineIn;
 
-    if (!devices.length) {
+    if (!hasDevices) {
       if (noDevices) noDevices.style.display = 'flex';
       list.querySelectorAll('.device-card').forEach(el => el.remove());
       return;
@@ -840,6 +894,33 @@ const SoundSync = (() => {
     });
 
     const seen = new Set();
+
+    // Always render line-in card first (at the top) when available
+    if (hasLineIn) {
+      seen.add('LINE_IN');
+      let card = existingCards['LINE_IN'];
+      if (!card) {
+        card = document.createElement('div');
+        card.className = 'device-card';
+        card.dataset.address = 'LINE_IN';
+        card.setAttribute('role', 'listitem');
+        // Insert as the first child (after no-devices placeholder)
+        const firstDevice = list.querySelector('.device-card');
+        if (firstDevice) {
+          list.insertBefore(card, firstDevice);
+        } else {
+          list.appendChild(card);
+        }
+      } else {
+        // Ensure line-in card is always first
+        const firstCard = list.querySelector('.device-card');
+        if (firstCard && firstCard !== card) {
+          list.insertBefore(card, firstCard);
+        }
+      }
+      updateLineInCard(card);
+    }
+
     devices.forEach(device => {
       seen.add(device.address);
       let card = existingCards[device.address];
@@ -856,6 +937,35 @@ const SoundSync = (() => {
     Object.entries(existingCards).forEach(([addr, el]) => {
       if (!seen.has(addr)) el.remove();
     });
+  }
+
+  function updateLineInCard(card) {
+    const isActive = state.lineInActive;
+    card.className = `device-card line-in-card ${isActive ? 'connected' : ''}`;
+    card.setAttribute('aria-label', `Line In — ${isActive ? 'Active' : 'Available'}`);
+
+    const stateText = isActive ? 'Active' : 'Available';
+    const btnText = isActive ? 'Deactivate' : 'Activate';
+    const btnClass = isActive ? 'connect-btn disconnect' : 'connect-btn';
+
+    card.innerHTML = `
+      <div class="device-info">
+        <div class="device-name">
+          <svg class="line-in-icon" width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style="vertical-align:-2px;margin-right:4px;opacity:0.7">
+            <path d="M1 6h2v4H1V6zm3-1v6h1.5l2 2h1V3h-1l-2 2H4zm8-1.5v1A3.5 3.5 0 0 1 12 11v1a4.5 4.5 0 0 0 0-9v1zm0 2.5v2a1.5 1.5 0 0 1 0-3v1z"/>
+          </svg>
+          Line In
+        </div>
+        <div class="device-meta">
+          <span class="device-state">${stateText}</span>
+        </div>
+      </div>
+      <button class="${btnClass}"
+              aria-label="${isActive ? 'Deactivate' : 'Activate'} Line In"
+              onclick="SoundSync.${isActive ? 'deactivateLineIn' : 'activateLineIn'}()">
+        ${btnText}
+      </button>
+    `;
   }
 
   function updateDeviceCard(card, device) {
@@ -936,7 +1046,11 @@ const SoundSync = (() => {
     const deviceEl = document.getElementById('playback-device');
     const streamEl = document.getElementById('stat-stream');
 
-    if (streaming) {
+    if (state.lineInActive) {
+      if (deviceEl) deviceEl.textContent = 'Line In';
+      if (streamEl) { streamEl.textContent = 'Active'; streamEl.className = 'stat-value active'; }
+      state.isStreaming = true;
+    } else if (streaming) {
       if (deviceEl) deviceEl.textContent = streaming.name;
       if (streamEl) { streamEl.textContent = 'Active'; streamEl.className = 'stat-value active'; }
       state.activeDevice = streaming.address;
@@ -956,8 +1070,13 @@ const SoundSync = (() => {
     if (!state.currentTrack) {
       const titleEl = document.getElementById('track-title');
       const artistEl = document.getElementById('track-artist-album');
-      if (titleEl) titleEl.textContent = streaming ? streaming.name : (active ? active.name : '—');
-      if (artistEl) artistEl.textContent = streaming ? 'Streaming to browser' : '—';
+      if (state.lineInActive) {
+        if (titleEl) titleEl.textContent = 'Line In';
+        if (artistEl) artistEl.textContent = 'Analog audio input';
+      } else if (titleEl) {
+        titleEl.textContent = streaming ? streaming.name : (active ? active.name : '—');
+        if (artistEl) artistEl.textContent = streaming ? 'Streaming to browser' : '—';
+      }
     }
   }
 
@@ -1125,6 +1244,8 @@ const SoundSync = (() => {
     connectDevice,
     disconnectDevice,
     removeDevice,
+    activateLineIn,
+    deactivateLineIn,
     setVolume,
     toggleBrowserAudio,
     setTheme,
