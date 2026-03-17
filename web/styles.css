@@ -432,6 +432,30 @@ body::before {
 .connect-btn.disconnect      { border-color: rgba(255, 69, 58, 0.4); color: #ff453a; }
 .connect-btn.disconnect:hover{ background: rgba(255, 69, 58, 0.15); }
 
+/* Line-in card — always pinned at the top of the device list */
+.line-in-card {
+  border-color: rgba(255, 140, 66, 0.25);
+  background: rgba(255, 140, 66, 0.04);
+}
+
+.line-in-card:hover {
+  border-color: rgba(255, 140, 66, 0.4);
+  background: rgba(255, 140, 66, 0.08);
+}
+
+.line-in-card.connected {
+  border-color: rgba(255, 140, 66, 0.5);
+  background: rgba(255, 140, 66, 0.08);
+  box-shadow: 0 0 16px rgba(255, 140, 66, 0.08);
+}
+
+.line-in-card .device-state { background: rgba(255, 140, 66, 0.15); color: var(--orange); }
+.line-in-card .connect-btn:hover { background: rgba(255, 140, 66, 0.2); border-color: var(--orange); color: var(--orange); }
+.line-in-card .connect-btn.disconnect { border-color: rgba(255, 140, 66, 0.4); color: var(--orange); }
+.line-in-card .connect-btn.disconnect:hover { background: rgba(255, 140, 66, 0.15); }
+
+.line-in-icon { color: var(--orange); }
+
 #no-devices {
   display: flex;
   flex-direction: column;

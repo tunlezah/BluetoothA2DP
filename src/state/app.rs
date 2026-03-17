@@ -184,6 +184,10 @@ pub enum SystemEvent {
     PlaybackStatusChanged { status: PlaybackStatus },
     /// Real-time spectrum analysis data (64 log-spaced bands, 0.0–1.0)
     SpectrumData { bands: Vec<f32> },
+    /// Line-in audio source activated
+    LineInActivated,
+    /// Line-in audio source deactivated
+    LineInDeactivated,
     /// System error occurred
     Error { message: String },
     /// Service is about to shut down — clients should reconnect after a delay.
@@ -196,6 +200,8 @@ pub enum SystemEvent {
         active_device: Option<String>,
         track_info: Option<TrackInfo>,
         playback_status: PlaybackStatus,
+        line_in_active: bool,
+        line_in_available: bool,
     },
 }
 
@@ -306,6 +312,10 @@ pub struct AppState {
     pub track_info: Option<TrackInfo>,
     /// Current playback status from AVRCP
     pub playback_status: PlaybackStatus,
+    /// Whether line-in is the active audio source
+    pub line_in_active: bool,
+    /// Detected line-in source name (e.g. "alsa_input.pci-...")
+    pub line_in_source: Option<String>,
 }
 
 impl AppState {
@@ -321,6 +331,8 @@ impl AppState {
             pipewire_ready: false,
             track_info: None,
             playback_status: PlaybackStatus::Unknown,
+            line_in_active: false,
+            line_in_source: None,
         }
     }
 
@@ -373,6 +385,8 @@ impl AppState {
             active_device: self.active_device.clone(),
             track_info: self.track_info.clone(),
             playback_status: self.playback_status.clone(),
+            line_in_active: self.line_in_active,
+            line_in_available: self.line_in_source.is_some(),
         }
     }
 }

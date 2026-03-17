@@ -135,6 +135,9 @@ async fn main() -> anyhow::Result<()> {
     // Initialise shared state
     let state = AppStateHandle::new(config);
 
+    // Detect line-in audio source
+    detect_line_in_source(&state).await;
+
     // Initialise DSP equaliser at 48kHz (standard Bluetooth A2DP sample rate)
     let equaliser = Arc::new(Equaliser::new(48000.0));
 
@@ -368,6 +371,34 @@ fn ensure_capture_sink() {
     } else {
         tracing::debug!("wpctl not available — skipping WirePlumber default-sink assignment");
     }
+}
+
+/// Detect available line-in (analog audio input) sources via PulseAudio/PipeWire.
+///
+/// Searches `pactl list short sources` for `alsa_input.*` entries that are not
+/// Bluetooth sources. The first match is stored in `AppState.line_in_source`.
+async fn detect_line_in_source(state: &AppStateHandle) {
+    let sources = std::process::Command::new("pactl")
+        .args(["list", "short", "sources"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default();
+
+    // Look for ALSA input sources (line-in, mic, USB audio interfaces).
+    // Exclude monitor sources (*.monitor) and Bluetooth sources (bluez_*).
+    for line in sources.lines() {
+        if let Some(name) = line.split_whitespace().nth(1) {
+            if name.starts_with("alsa_input.") && !name.contains(".monitor") {
+                tracing::info!(source = %name, "Detected line-in audio source");
+                let mut s = state.state.write().await;
+                s.line_in_source = Some(name.to_string());
+                return;
+            }
+        }
+    }
+
+    tracing::debug!("No line-in audio source detected");
 }
 
 /// Wait for shutdown signal, broadcast `ServiceStopping` to WebSocket clients,
