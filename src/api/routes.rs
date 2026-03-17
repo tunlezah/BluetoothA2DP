@@ -642,15 +642,16 @@ async fn post_line_in_activate(
     }
 
     state.app.broadcast(SystemEvent::LineInActivated);
-    tracing::info!("Line-in activated, disconnected {} BT device(s)", connected_addresses.len());
+    tracing::info!(
+        "Line-in activated, disconnected {} BT device(s)",
+        connected_addresses.len()
+    );
 
     Ok(Json(serde_json::json!({ "ok": true, "source": source })))
 }
 
 /// Deactivate line-in as the audio source.
-async fn post_line_in_deactivate(
-    State(state): State<ApiState>,
-) -> Json<serde_json::Value> {
+async fn post_line_in_deactivate(State(state): State<ApiState>) -> Json<serde_json::Value> {
     {
         let mut s = state.app.state.write().await;
         s.line_in_active = false;
