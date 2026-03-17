@@ -458,28 +458,60 @@ check_bt_audio_conflicts() {
     header "Checking for conflicting Bluetooth audio agents"
 
     local conflicts=()
+    local conflict_services=()   # systemd service names to disable
     local suspicious=""
 
     # 1. bluealsa — most common competitor; registers its own A2DP MediaEndpoint
     if systemctl is-active --quiet bluealsa 2>/dev/null; then
         conflicts+=("bluealsa (system service is running)")
+        conflict_services+=("system:bluealsa")
     fi
     if systemctl --user is-active --quiet bluealsa 2>/dev/null; then
         conflicts+=("bluealsa (user service is running)")
+        conflict_services+=("user:bluealsa")
     fi
-    if pgrep -x bluealsad &>/dev/null && [ "${#conflicts[@]}" -eq 0 ]; then
+    if pgrep -x bluealsad &>/dev/null && [ "${#conflict_services[@]}" -eq 0 ]; then
         conflicts+=("bluealsad (process running, not via systemd)")
     fi
 
-    # 2. PulseAudio with Bluetooth modules loaded
+    # 2. Any system service whose unit name matches Bluetooth-audio patterns —
+    #    catches auto-restarting services like bluetooth-audio.service that will
+    #    respawn the process immediately after it is killed.
+    local svc_matches
+    svc_matches=$(systemctl list-unit-files --type=service --no-legend 2>/dev/null \
+        | awk '{print $1}' \
+        | grep -iE '(bluetooth.?audio|bluez.?audio|bt.?audio|a2dp)' \
+        | grep -v "soundsync\|wireplumber" \
+        || true)
+    if [ -n "${svc_matches}" ]; then
+        while IFS= read -r svc; do
+            local state
+            state=$(systemctl is-enabled "${svc}" 2>/dev/null || true)
+            if [[ "${state}" == "enabled" || "${state}" == "static" ]]; then
+                # Only flag if it is actually active or activating (including auto-restart)
+                local active
+                active=$(systemctl is-active "${svc}" 2>/dev/null || true)
+                if [[ "${active}" != "inactive" && "${active}" != "dead" ]]; then
+                    conflicts+=("${svc} (system service: ${active}, ${state})")
+                    conflict_services+=("system:${svc}")
+                elif [[ "${state}" == "enabled" ]]; then
+                    # Enabled but not currently active — warn so it doesn't start later
+                    conflicts+=("${svc} (system service: enabled but not running — will start on next boot/trigger)")
+                    conflict_services+=("system:${svc}")
+                fi
+            fi
+        done <<< "${svc_matches}"
+    fi
+
+    # 3. PulseAudio with Bluetooth modules loaded
     if pgrep -x pulseaudio &>/dev/null; then
         if pactl list modules 2>/dev/null | grep -qiE "module-bluetooth-(discover|device|policy)"; then
             conflicts+=("pulseaudio (Bluetooth modules are loaded)")
         fi
     fi
 
-    # 3. Any process whose binary path contains Bluetooth-audio patterns —
-    #    catches custom Python/Node BT audio servers (e.g. /opt/bluetooth-audio/…)
+    # 4. Any running process whose args contain Bluetooth-audio patterns —
+    #    catches processes not managed by a detected service unit.
     suspicious=$(ps -eo pid,args --no-headers 2>/dev/null \
         | grep -iE '(bluetooth.?audio|bluez.?audio|bt.?audio|a2dp.?sink)' \
         | grep -v "grep\|soundsync\|wireplumber\|install\.sh" \
@@ -509,21 +541,25 @@ check_bt_audio_conflicts() {
     echo ""
 
     if [ -t 0 ]; then
-        echo -en "  ${BLD}Stop conflicting processes now?${RST} [Y/n]: "
+        echo -en "  ${BLD}Disable and stop conflicting services/processes now?${RST} [Y/n]: "
         read -r answer
         answer="${answer:-Y}"
         if [[ "${answer}" =~ ^[Yy]$ ]]; then
-            # Stop & disable bluealsa services
-            if systemctl is-active --quiet bluealsa 2>/dev/null; then
-                sudo systemctl stop bluealsa    || true
-                sudo systemctl disable bluealsa || true
-                success "bluealsa system service stopped and disabled"
-            fi
-            if systemctl --user is-active --quiet bluealsa 2>/dev/null; then
-                systemctl --user stop bluealsa    || true
-                systemctl --user disable bluealsa || true
-                success "bluealsa user service stopped and disabled"
-            fi
+            # Disable & stop conflicting systemd services so they cannot respawn
+            for entry in "${conflict_services[@]}"; do
+                local scope svc
+                scope="${entry%%:*}"
+                svc="${entry##*:}"
+                if [ "${scope}" = "system" ]; then
+                    sudo systemctl disable --now "${svc}" 2>/dev/null \
+                        && success "Disabled and stopped system service: ${svc}" \
+                        || warn "Could not disable ${svc} — try: sudo systemctl disable --now ${svc}"
+                else
+                    systemctl --user disable --now "${svc}" 2>/dev/null \
+                        && success "Disabled and stopped user service: ${svc}" \
+                        || warn "Could not disable ${svc} — try: systemctl --user disable --now ${svc}"
+                fi
+            done
 
             # Kill any remaining conflicting processes by PID
             if [ -n "${suspicious}" ]; then
@@ -542,9 +578,18 @@ check_bt_audio_conflicts() {
         fi
     else
         warn "Non-interactive mode — skipping automatic stop."
-        warn "Stop conflicting processes manually before connecting a Bluetooth source:"
-        warn "  sudo systemctl disable --now bluealsa   # if bluealsa is the culprit"
-        warn "  kill <PID>                              # for other processes"
+        warn "Disable conflicting services manually before connecting a Bluetooth source:"
+        for entry in "${conflict_services[@]}"; do
+            local scope svc
+            scope="${entry%%:*}"
+            svc="${entry##*:}"
+            if [ "${scope}" = "system" ]; then
+                warn "  sudo systemctl disable --now ${svc}"
+            else
+                warn "  systemctl --user disable --now ${svc}"
+            fi
+        done
+        [ -n "${suspicious}" ] && warn "  kill <PID>   # for any remaining processes"
     fi
 }
 
