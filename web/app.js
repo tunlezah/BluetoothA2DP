@@ -377,13 +377,15 @@ const SoundSync = (() => {
       fetchStreamInfo();
 
       // If the browser is currently playing, restart with the new quality.
+      const wasPlayingSafariWav = _safariWav.playing();
+      if (wasPlayingSafariWav) _safariWav.stop();
+
       const audio = getAudioPlayer();
+      const wasPlaying = wasPlayingSafariWav || (audio && !audio.paused);
       if (audio && !audio.paused) {
         const stop = () => {
           audio.pause();
           audio.src = '';
-          // Small delay so the old stream closes before the new one opens.
-          setTimeout(() => toggleBrowserAudio(), 120);
         };
         if (_playPromise) {
           _playPromise.then(stop).catch(() => {});
@@ -391,6 +393,10 @@ const SoundSync = (() => {
         } else {
           stop();
         }
+      }
+      if (wasPlaying) {
+        // Small delay so the old stream closes before the new one opens.
+        setTimeout(() => toggleBrowserAudio(), 120);
       }
     } catch (_) {}
   }
@@ -479,11 +485,208 @@ const SoundSync = (() => {
     return document.getElementById('audio-player');
   }
 
+  // Safari cannot stream WAV via the <audio> element because it expects a
+  // seekable, finite-length file.  The streaming WAV header uses a near-max
+  // data-chunk size (0xFFFF_FFFE) which Safari rejects with "Operation not
+  // supported".  Detect Safari so we can fall back to Web Audio API for WAV.
+  function _isSafari() {
+    const ua = navigator.userAgent;
+    return /Safari/.test(ua) && !/Chrome|Chromium|Edg|OPR|Opera/.test(ua);
+  }
+
+  // ── Safari WAV player (Web Audio API) ────────────────────────────────────
+  //
+  // Streams raw PCM from the /audio/stream?quality=wav endpoint, skips the
+  // 44-byte WAV header, and feeds s16le stereo samples into an AudioContext.
+  const _safariWav = (() => {
+    const WAV_HEADER_SIZE = 44;
+    const CHANNELS = 2;
+    const SAMPLE_RATE = 44100;
+    // ScriptProcessorNode buffer size — 4096 frames ≈ 93 ms at 44.1 kHz.
+    const BUFFER_SIZE = 4096;
+
+    let _audioCtx = null;
+    let _scriptNode = null;
+    let _gainNode = null;
+    let _abortCtrl = null;
+    // Ring of Float32Array buffers waiting to be played.
+    let _queue = [];
+    let _playing = false;
+
+    function playing() { return _playing; }
+
+    async function start() {
+      if (_playing) return;
+      _playing = true;
+
+      _abortCtrl = new AbortController();
+
+      // AudioContext must be created/resumed inside a user gesture.
+      if (!_audioCtx || _audioCtx.state === 'closed') {
+        _audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+          sampleRate: SAMPLE_RATE,
+        });
+      }
+      if (_audioCtx.state === 'suspended') await _audioCtx.resume();
+
+      _gainNode = _audioCtx.createGain();
+      const audio = getAudioPlayer();
+      _gainNode.gain.value = audio ? audio.volume : 1;
+      _gainNode.connect(_audioCtx.destination);
+
+      _scriptNode = _audioCtx.createScriptProcessor(BUFFER_SIZE, 0, CHANNELS);
+      _scriptNode.onaudioprocess = _onAudioProcess;
+      _scriptNode.connect(_gainNode);
+
+      _queue = [];
+
+      // Fetch the WAV stream and pump PCM into _queue.
+      _fetchLoop(_abortCtrl.signal);
+    }
+
+    function stop() {
+      _playing = false;
+      if (_abortCtrl) { _abortCtrl.abort(); _abortCtrl = null; }
+      if (_scriptNode) { _scriptNode.disconnect(); _scriptNode = null; }
+      if (_gainNode) { _gainNode.disconnect(); _gainNode = null; }
+      _queue = [];
+    }
+
+    function setVolume(v) {
+      if (_gainNode) _gainNode.gain.value = v;
+    }
+
+    async function _fetchLoop(signal) {
+      try {
+        const res = await fetch(
+          `/audio/stream?quality=wav`,
+          { signal },
+        );
+        if (!res.ok || !res.body) { stop(); return; }
+        const reader = res.body.getReader();
+        let skipped = 0;
+        let leftover = null;
+
+        while (_playing) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          let chunk = value;
+          // Skip the 44-byte WAV header at the start of the stream.
+          if (skipped < WAV_HEADER_SIZE) {
+            const remaining = WAV_HEADER_SIZE - skipped;
+            if (chunk.length <= remaining) {
+              skipped += chunk.length;
+              continue;
+            }
+            chunk = chunk.subarray(remaining);
+            skipped = WAV_HEADER_SIZE;
+          }
+
+          // Prepend any leftover bytes from the previous chunk (s16le
+          // samples are 2 bytes, so we may get an odd byte at the end).
+          if (leftover) {
+            const merged = new Uint8Array(leftover.length + chunk.length);
+            merged.set(leftover);
+            merged.set(chunk, leftover.length);
+            chunk = merged;
+            leftover = null;
+          }
+
+          // Ensure even byte count (whole samples).
+          const usable = chunk.length & ~1;
+          if (chunk.length > usable) {
+            leftover = chunk.subarray(usable);
+          }
+          if (usable === 0) continue;
+
+          // Convert s16le bytes → interleaved Float32 samples.
+          const view = new DataView(chunk.buffer, chunk.byteOffset, usable);
+          const floats = new Float32Array(usable / 2);
+          for (let i = 0; i < floats.length; i++) {
+            floats[i] = view.getInt16(i * 2, true) / 32768;
+          }
+          _queue.push(floats);
+
+          // Back-pressure: if the queue grows too large (>500 ms buffered),
+          // wait a tick to let onaudioprocess drain it.
+          const queuedSamples = _queue.reduce((s, b) => s + b.length, 0);
+          if (queuedSamples > SAMPLE_RATE * CHANNELS) {
+            await new Promise(r => setTimeout(r, 50));
+          }
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') {
+          showToast('WAV stream error: ' + e.message, 'error');
+        }
+      }
+    }
+
+    // Offset into the front buffer of _queue.
+    let _queueOffset = 0;
+
+    function _onAudioProcess(e) {
+      const outL = e.outputBuffer.getChannelData(0);
+      const outR = e.outputBuffer.getChannelData(1);
+      let written = 0;
+
+      while (written < outL.length && _queue.length > 0) {
+        const buf = _queue[0];
+        // buf is interleaved: [L, R, L, R, …]
+        const available = (buf.length - _queueOffset) / CHANNELS;
+        const needed = outL.length - written;
+        const frames = Math.min(available, needed);
+
+        for (let f = 0; f < frames; f++) {
+          outL[written + f] = buf[_queueOffset + f * CHANNELS];
+          outR[written + f] = buf[_queueOffset + f * CHANNELS + 1];
+        }
+        written += frames;
+        _queueOffset += frames * CHANNELS;
+
+        if (_queueOffset >= buf.length) {
+          _queue.shift();
+          _queueOffset = 0;
+        }
+      }
+
+      // Fill remaining with silence to avoid glitches.
+      for (let i = written; i < outL.length; i++) {
+        outL[i] = 0;
+        outR[i] = 0;
+      }
+    }
+
+    return { playing, start, stop, setVolume };
+  })();
+
   function toggleBrowserAudio() {
     const audio = getAudioPlayer();
     const btn   = document.getElementById('btn-listen');
     if (!audio) return;
 
+    const useSafariWav = _isSafari() && state.streamQuality === 'wav';
+
+    // ── Safari WAV path (Web Audio API) ──────────────────────────────────
+    if (useSafariWav) {
+      if (_safariWav.playing()) {
+        _safariWav.stop();
+        if (btn) btn.textContent = 'Listen';
+      } else {
+        _safariWav.start().then(() => {
+          if (btn) btn.textContent = 'Stop';
+        }).catch(err => {
+          showToast('Could not start audio: ' + err.message, 'error');
+          if (btn) btn.textContent = 'Listen';
+        });
+      }
+      return;
+    }
+
+    // ── Stop Safari WAV if switching away from it ────────────────────────
+    if (_safariWav.playing()) _safariWav.stop();
+
+    // ── Standard <audio> element path ────────────────────────────────────
     if (audio.paused) {
       // Set src fresh each time so the browser opens a new HTTP connection.
       // Do NOT call audio.load() — that aborts the pending play() promise.
@@ -527,8 +730,10 @@ const SoundSync = (() => {
     if (icons[0]) {
       icons[0].textContent = value < 10 ? '🔇' : value < 50 ? '🔈' : '🔉';
     }
+    const v = Number(value) / 100;
     const audio = getAudioPlayer();
-    if (audio) audio.volume = Number(value) / 100;
+    if (audio) audio.volume = v;
+    _safariWav.setVolume(v);
   }
 
   // ── Theme ──────────────────────────────────────────────────────────────────
