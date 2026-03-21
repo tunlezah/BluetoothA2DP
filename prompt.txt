@@ -1,0 +1,60 @@
+You are building SoundSync — a Bluetooth A2DP audio sink with DSP equalizer, spectrum analyzer, and web UI, written in Rust with a Preact/TypeScript frontend.
+
+Read `do-over.md` in this repository for the complete specification. It contains:
+- Full system architecture with signal flow diagrams
+- Bluetooth A2DP subsystem spec (BlueZ D-Bus interfaces, device state machine, pairing agent)
+- PipeWire audio pipeline spec (filter-chain EQ, null sink, node detection)
+- DSP equalizer spec (10-band parametric EQ, biquad math, preset management)
+- WebRTC audio streaming spec (Opus 128kbps to browser, signaling protocol)
+- Web API spec (REST endpoints, WebSocket protocol, event format)
+- AVRCP media controls spec (track metadata, play/pause/skip)
+- Codec support spec (SBC, AAC, LDAC, aptX, aptX HD — all ship at launch)
+- Agent work unit breakdown with parallelization map
+- Pitfalls from the original implementation (with specific prevention measures)
+
+## Critical Rules
+
+1. **NOTHING merges without passing `cargo build && cargo test && cargo clippy && cargo fmt --check` locally.** The original implementation shipped 7,696 lines that didn't compile. Every work unit must build before integration.
+
+2. **Validate zbus 4.x proxy patterns with a minimal example BEFORE using them in application code.** The original project had 4 separate PR chains fixing zbus API misuse. Key gotcha: `connection::Builder::session()` not `ConnectionBuilder::session()`. Use `#[proxy]` not `#[dbus_proxy]`.
+
+3. **Test PipeWire filter-chain configs and pactl commands on a real system before writing Rust wrappers.** The original project's audio pipeline took 9 PRs and a full revert. Validate each layer independently.
+
+4. **Test browser audio in Chrome, Firefox, AND Safari from day one.** Safari broke 3 times in the original implementation. WebRTC eliminates most Safari issues but still test.
+
+5. **Use the event-driven architecture (tokio::sync::broadcast).** All components communicate via SystemEvent. No tight coupling between Bluetooth and PipeWire.
+
+## Implementation Strategy
+
+Follow the Work Unit parallelization map in `do-over.md` Section 10. The 16 work units are organized in 4 phases:
+
+**Phase 1 (6 parallel agents):** Project scaffold, Bluetooth D-Bus research, PipeWire audio research, DSP EQ implementation, WebRTC prototype, Frontend scaffold. These have ZERO dependencies on each other.
+
+**Phase 2 (5 agents, some parallel):** Bluetooth manager, Audio pipeline integration, Web API + WebSocket, AVRCP media controls, Codec registration. Depend on Phase 1 outputs.
+
+**Phase 3 (2 agents):** WebRTC audio server, Frontend integration. Depend on Phase 2.
+
+**Phase 4 (3 agents):** Line-in source, Installer script, E2E tests. Can partially overlap with Phase 3.
+
+## Key Technical Decisions
+
+- **Bluetooth:** Use `bluer` crate for adapter/device lifecycle. Use raw `zbus` only for A2DP endpoint registration and AVRCP (BlueR doesn't cover these).
+- **Audio:** PipeWire `pipewire-filter-chain` subprocess for EQ. WirePlumber manages the graph — don't manually create links.
+- **Browser audio:** WebRTC with Opus (not WebSocket + raw PCM). Use the `webrtc` crate (pure Rust).
+- **Frontend:** Preact + TypeScript + Vite. Use `audioMotion-analyzer` for spectrum visualization.
+- **Codecs:** Register SBC/AAC/LDAC/aptX/aptX HD endpoints with BlueZ. PipeWire's spa-bluez5 handles actual decoding.
+- **State:** `Arc<RwLock<AppState>>` + `broadcast::Sender<SystemEvent>` for all inter-component communication.
+
+## Deliverables
+
+A complete, working application that:
+1. Appears as a Bluetooth A2DP sink (discoverable, auto-pairing)
+2. Accepts connections from phones/tablets with SBC/AAC/LDAC/aptX negotiation
+3. Routes audio through a 10-band parametric EQ to system speakers
+4. Serves a web UI with device management, EQ controls with presets, real-time spectrum analyzer
+5. Streams live audio to the browser via WebRTC (Opus)
+6. Provides AVRCP media controls (play/pause/skip/track info)
+7. Supports line-in as alternative audio source
+8. Passes `cargo build && cargo test && cargo clippy && cargo fmt --check` with zero warnings
+9. Has working CI (GitHub Actions)
+10. Includes an installer script for fresh Linux systems
